@@ -155,6 +155,14 @@ data, and it does not reset browser identity. Two options:
   the proxy tunnel and can be rate-limited; the exit IP itself is authoritative
   (it comes from Evomi). Your configured `country-...` targeting flags are
   always shown by `i`/`s` regardless.
+- **Upstream 502 for some sites, others load fine** (`upstream CONNECT refused
+  for host:port: HTTP/1.1 502 Bad Gateway`): the bridge, auth, and TLS leg are
+  working (prove it: `i` succeeds and plain sites load through the proxy). The
+  502 comes from Evomi's side for that specific target: the pinned exit peer
+  cannot route to it right now, or Evomi refuses that host/port. Press `r` to
+  rotate to a new exit IP and retry the page; if a host fails on every session,
+  it is an Evomi-side restriction, not a bridge bug. The refusal log names the
+  target `host:port` so you can tell which sites are affected.
 - **Port 8899 in use**: stop the other program or pass `--local-port 8900`
   and update the browser port to match.
 - **Nothing loads, bridge shows no requests**: browser is not using the

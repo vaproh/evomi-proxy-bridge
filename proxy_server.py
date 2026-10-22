@@ -296,7 +296,7 @@ class ProxyServer:
         except UpstreamError:
             raise
         except (OSError, asyncio.TimeoutError) as exc:
-            raise UpstreamError(f"upstream unreachable: {exc}") from exc
+            raise UpstreamError(f"upstream unreachable for {target}: {exc}") from exc
         try:
             up_w.write(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n"
                        f"Proxy-Authorization: Basic {token}\r\n"
@@ -308,7 +308,7 @@ class ProxyServer:
                 raise UpstreamAuthError("upstream rejected credentials")
             if code != "200":
                 raise UpstreamError(
-                    f"upstream CONNECT refused: {redact(_status_line(resp))}")
+                    f"upstream CONNECT refused for {target}: {redact(_status_line(resp))}")
             c_w.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await c_w.drain()
             self.connect_count += 1
