@@ -79,6 +79,8 @@ class Config:
     upstream_port: int = DEFAULT_UPSTREAM_PORT
     upstream_tls: bool = False  # True for https endpoints (e.g. *.evomi-proxy.com:1001)
     upstream_cafile: str = ""  # custom CA bundle for upstream TLS (rarely needed)
+    session_type: str | None = None  # override: session | hardsession | lockedsession
+    lifetime: int | None = None  # override: sticky minutes, 1-1440 (session type only)
     username: str = ""
     connect_timeout: float = DEFAULT_TIMEOUT
     relay_timeout: float = 60.0
@@ -102,6 +104,11 @@ class Config:
             raise ValueError("relay_timeout must be 5-600s")
         if not 1 <= self.max_connections <= 1000:
             raise ValueError("max_connections must be 1-1000")
+        if self.session_type is not None and self.session_type not in (
+                "session", "hardsession", "lockedsession"):
+            raise ValueError("session_type must be session|hardsession|lockedsession")
+        if self.lifetime is not None and not (1 <= self.lifetime <= 1440):
+            raise ValueError("lifetime must be 1-1440 minutes")
         if bool(self.local_user) != bool(self.local_pass):
             raise ValueError("--local-user and --local-pass must be given together")
 
@@ -116,6 +123,8 @@ ENV_KEYS = {
     "EVOMI_MAX_CONNECTIONS": "max_connections",
     "EVOMI_LOCAL_USER": "local_user",
     "EVOMI_LOCAL_PASS": "local_pass",
+    "EVOMI_SESSION_TYPE": "session_type",
+    "EVOMI_LIFETIME": "lifetime",
 }
 _BOOL_TRUE = {"1", "true", "yes", "on"}
 _BOOL_FALSE = {"0", "false", "no", "off"}

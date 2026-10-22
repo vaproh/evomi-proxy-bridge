@@ -19,6 +19,22 @@ python3 main.py
 # or with just (https://just.systems): just run | just test | just check | just live-test
 ```
 
+## Windows
+
+Double-click or run from a terminal (no admin needed):
+
+```bat
+run.bat
+run.bat --local-port 8900 --upstream-tls
+```
+
+`run.bat` installs `uv` automatically if missing (official installer), lets `uv`
+provision Python 3.12, and launches the bridge; extra arguments are forwarded
+to `main.py`. Hotkeys work keypress-by-keypress (no Enter) via the console,
+and rotation notifications use a Windows toast when available, falling back
+to a terminal hint. Everything else (`.env`, PAC URL, Mullvad setup) works
+the same as on Linux.
+
 You will be prompted for your Evomi username and password (hidden input,
 kept in process memory only, never written to disk or shown in `ps`/history).
 Two input styles are accepted at the password prompt:

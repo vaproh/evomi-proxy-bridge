@@ -176,10 +176,14 @@ def prompt_credentials(cfg: Config, env: dict) -> tuple[str, str]:
 
 
 def read_keys(stop: threading.Event, out: queue.Queue[str]) -> None:
-    """Single-keypress reader for ordinary Linux terminals, no root needed.
+    """Single-keypress reader for ordinary terminals, no root needed.
 
-    Uses termios raw mode when stdin is a TTY; falls back to line input.
+    Windows: msvcrt (no Enter). Linux/macOS: termios raw mode on a TTY.
+    Anything else: line input fallback.
     """
+    if _os.name == "nt":
+        _read_keys_windows(stop, out)
+        return
     try:
         import termios
         import tty
@@ -227,6 +231,29 @@ def read_keys(stop: threading.Event, out: queue.Queue[str]) -> None:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+def _read_keys_windows(stop: threading.Event, out: queue.Queue[str]) -> None:
+    """Single-keypress reader for Windows consoles (msvcrt, no Enter needed)."""
+    import msvcrt
+
+    while not stop.is_set():
+        try:
+            if not msvcrt.kbhit():
+                time.sleep(0.05)
+                continue
+            ch = msvcrt.getwch()
+        except (KeyboardInterrupt, OSError):
+            out.put("q")
+            return
+        if ch in ("", "\x00", "\xe0"):
+            continue  # special-key prefix; ignore the sequence
+        if ch in ("\x03", "\x1a"):  # Ctrl+C / Ctrl+Z
+            out.put("q")
+            return
+        if ch in ("\r", "\n"):
+            continue
+        out.put(ch.lower())
+
+
 def format_flags(session: SessionState) -> str:
     flags = session.flags()
     return (" | ".join(flags)) if flags else "(no targeting flags)"
@@ -242,7 +269,9 @@ def format_lifetime(session: SessionState) -> str:
 
 
 async def desktop_notify(title: str, body: str) -> bool:
-    """Linux desktop notification via notify-send. Returns False if unavailable."""
+    """Desktop notification. notify-send on Linux, WinRT toast on Windows."""
+    if _os.name == "nt":
+        return await _notify_windows(title, body)
     try:
         proc = await asyncio.create_subprocess_exec(
             "notify-send", title, body,
@@ -251,6 +280,49 @@ async def desktop_notify(title: str, body: str) -> bool:
         return proc.returncode == 0
     except (FileNotFoundError, OSError):
         return False
+
+
+_WINDOWS_TOAST_PS = r"""$ErrorActionPreference = 'Stop'
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$texts = $template.GetElementsByTagName('text')
+$texts[0].AppendChild($template.CreateTextNode($args[0])) | Out-Null
+$texts[1].AppendChild($template.CreateTextNode($args[1])) | Out-Null
+$toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('proxy-bridge').Show($toast)
+"""
+
+
+async def _notify_windows(title: str, body: str) -> bool:
+    """Best-effort Windows toast via PowerShell + WinRT. False when unavailable."""
+    import shutil
+    import tempfile
+
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    if shell is None:
+        return False
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".ps1", delete=False,
+                                         encoding="utf-8-sig") as fh:
+            fh.write(_WINDOWS_TOAST_PS)
+            path = fh.name
+        proc = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", path, title, body,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL),
+            timeout=20)
+        await asyncio.wait_for(proc.wait(), timeout=20)
+        return proc.returncode == 0
+    except (OSError, asyncio.TimeoutError):
+        return False
+    finally:
+        if path:
+            try:
+                _os.unlink(path)
+            except OSError:
+                pass
 
 
 def _kv(key: str, value: str) -> str:
@@ -341,7 +413,9 @@ async def verify_rotation(cfg: Config, session: SessionState, state: dict,
     if cfg.notify:
         title = "proxy-bridge: IP changed" if changed else "proxy-bridge: rotation verified"
         if not await desktop_notify(title, detail):
-            print(_info(paint("(install `notify-send` / libnotify to get desktop popups)", C.DIM)))
+            hint = ("install a notification daemon" if _os.name != "nt"
+                    else "enable Windows notifications for this app")
+            print(_info(paint(f"(no desktop popup: {hint})", C.DIM)))
 
 
 async def async_main() -> int:

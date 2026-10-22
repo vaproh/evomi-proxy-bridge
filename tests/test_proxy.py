@@ -743,5 +743,49 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(pac_request_path("GET", "/index.html", []))
         self.assertIsNone(pac_request_path("CONNECT", "example.com:443", []))
 
+    def test_windows_keys_single_press(self):
+        import queue as _queue
+        import sys as _sys
+        import threading as _threading
+        import main as _main
+
+        presses = iter(["r", "\r", "i", "\x03"])
+
+        class FakeMsvcrt:
+            @staticmethod
+            def kbhit():
+                return True
+
+            @staticmethod
+            def getwch():
+                try:
+                    return next(presses)
+                except StopIteration:
+                    raise KeyboardInterrupt
+
+        _sys.modules["msvcrt"] = FakeMsvcrt
+        try:
+            out: _queue.Queue[str] = _queue.Queue()
+            _main._read_keys_windows(_threading.Event(), out)
+            got = []
+            while not out.empty():
+                got.append(out.get())
+            self.assertEqual(got, ["r", "i", "q"])
+        finally:
+            del _sys.modules["msvcrt"]
+
+    async def test_desktop_notify_no_backend(self):
+        import main as _main
+        from unittest import mock
+        with mock.patch.object(_main._os, "name", "nt"):
+            with mock.patch("shutil.which", return_value=None):
+                self.assertFalse(await _main.desktop_notify("t", "b"))
+        self.assertIn("ToastNotificationManager", _main._WINDOWS_TOAST_PS)
+        self.assertIn("$args[0]", _main._WINDOWS_TOAST_PS)
+
+    async def test_desktop_notify_returns_bool(self):
+        import main as _main
+        self.assertIsInstance(await _main.desktop_notify("t", "b"), bool)
+
 if __name__ == "__main__":
     unittest.main()
