@@ -16,13 +16,57 @@ from proxy_server import ProxyServer, UpstreamAuthError, check_exit_ip, check_ge
 
 log = logging.getLogger("proxy_bridge")
 
-HELP = """\
-hotkeys: [r]otate  [i]p info  [s]tatus  [q]uit
-  r - new random session id (flags kept), verify exit IP, desktop-notify result
-  i - session label, flags, lifetime + current exit IP and geo (through proxy)
-  s - server status incl. flags, lifetime left, last known exit IP
-  q - graceful shutdown (also Ctrl+C)
-"""
+import os as _os
+
+_COLOR = sys.stdout.isatty() and _os.environ.get("NO_COLOR", "") == ""
+
+
+class C:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    GREEN = "\033[32m"
+    RED = "\033[31m"
+    YELLOW = "\033[33m"
+    CYAN = "\033[36m"
+    MAGENTA = "\033[35m"
+
+
+def paint(text: str, *codes: str) -> str:
+    if _COLOR and codes:
+        return "".join(codes) + text + C.RESET
+    return text
+
+
+def _ok(msg: str) -> str:
+    return paint("[+]", C.GREEN, C.BOLD) + " " + msg
+
+
+def _err(msg: str) -> str:
+    return paint("[-]", C.RED, C.BOLD) + " " + msg
+
+
+def _info(msg: str) -> str:
+    return paint("[*]", C.CYAN) + " " + msg
+
+
+def _warn(msg: str) -> str:
+    return paint("[!]", C.YELLOW, C.BOLD) + " " + msg
+
+def help_text() -> str:
+    k = lambda c: paint(c, C.BOLD, C.MAGENTA)  # noqa: E731
+    d = lambda s: paint(s, C.DIM)  # noqa: E731
+    return (
+        f"{paint('hotkeys', C.BOLD, C.CYAN)}  "
+        f"[{k('r')}]otate  [{k('i')}]p info  [{k('s')}]tatus  [{k('q')}]uit\n"
+        f"  {k('r')} - new random session id {d('(flags kept)')}, verify exit IP, desktop-notify\n"
+        f"  {k('i')} - session, flags, lifetime + current exit IP and geo {d('(through proxy)')}\n"
+        f"  {k('s')} - server status incl. flags, lifetime left, last known exit IP\n"
+        f"  {k('q')} - graceful shutdown {d('(also Ctrl+C)')}\n"
+    )
+
+
+HELP = help_text()
 
 
 class SessionState:
@@ -110,7 +154,7 @@ class SessionState:
 def prompt_credentials(cfg: Config, env: dict) -> tuple[str, str]:
     env_pw = env_password(env)
     if cfg.username and env_pw:
-        print("[*] credentials taken from env file (no prompt)")
+        print(_info(paint("credentials taken from env file (no prompt)", C.DIM)))
         return cfg.username, env_pw
     first = (cfg.username or input("Evomi username (or paste full http://user:pass@host:port URL): ")).strip()
     if not first:
@@ -121,13 +165,13 @@ def prompt_credentials(cfg: Config, env: dict) -> tuple[str, str]:
         cfg.username, cfg.upstream_host, cfg.upstream_port = user, host, port
         cfg.upstream_tls = cfg.upstream_tls or use_tls
         cfg.validate()
-        print(f"[*] URL parsed: user + {'https' if cfg.upstream_tls else 'http'} upstream {host}:{port}, flags kept")
+        print(_info(f"URL parsed: user + {paint(('https' if cfg.upstream_tls else 'http') + f' upstream {host}:{port}', C.BOLD)}, flags kept"))
         return user, password
     password = getpass.getpass("Evomi password, flags allowed (hidden, never stored): ").strip()
     if not password:
         raise SystemExit("password is required")
-    print("[*] tip: paste a full dashboard string incl. _country-.._session-.._lifetime-.. flags;")
-    print("    rotation swaps only the session id and keeps the rest.")
+    print(_info(paint("tip: paste a full dashboard string incl. _country-.._session-.._lifetime-.. flags;", C.DIM)))
+    print(paint("    rotation swaps only the session id and keeps the rest.", C.DIM))
     return first, password
 
 
@@ -209,19 +253,23 @@ async def desktop_notify(title: str, body: str) -> bool:
         return False
 
 
+def _kv(key: str, value: str) -> str:
+    return paint(key, C.DIM) + " " + paint(value, C.BOLD)
+
+
 async def cmd_ip(cfg: Config, session: SessionState, state: dict) -> None:
     label = session.label()
-    print(f"[*] {label} - checking exit IP through Evomi ...")
-    print(f"[*] flags: {format_flags(session)}")
-    print(f"[*] {format_lifetime(session)}")
+    print(_info(f"{paint(label, C.BOLD)} {paint('- checking exit IP through Evomi ...', C.DIM)}"))
+    print(_info(_kv("flags:", format_flags(session))))
+    print(_info(_kv("lifetime:", format_lifetime(session).removeprefix("lifetime: "))))
     try:
         ip = await check_exit_ip(cfg.username, session.current_password(),
                                  cfg.upstream_host, cfg.upstream_port,
                                  upstream_tls=cfg.upstream_tls,
                                  cafile=cfg.upstream_cafile or None)
         state["last_ip"] = ip
-        print(f"[+] exit IP: {ip}")
-        print("    (independent check via CONNECT to ip.evomi.com through upstream)")
+        print(_ok(f"exit IP: {paint(ip, C.BOLD, C.GREEN)}"))
+        print(paint("    (independent check via CONNECT to ip.evomi.com through upstream)", C.DIM))
         try:
             geo = await check_geo(cfg.username, session.current_password(),
                                   cfg.upstream_host, cfg.upstream_port, ip,
@@ -233,26 +281,29 @@ async def cmd_ip(cfg: Config, session: SessionState, state: dict) -> None:
             loc = ", ".join(p for p in
                             (geo.get("city", ""), geo.get("regionName", ""),
                              f"{geo.get('country', '')} ({geo.get('countryCode', '')})") if p)
-            print(f"[+] location: {loc or 'unknown'} | ISP: {geo.get('isp') or 'unknown'}")
+            print(_ok(f"location: {paint(loc or 'unknown', C.BOLD)} | "
+                        f"{paint('ISP:', C.DIM)} {geo.get('isp') or 'unknown'}"))
         else:
-            print("[*] location: unavailable (geo lookup failed or rate-limited)")
+            print(_info("location: unavailable (geo lookup failed or rate-limited)"))
     except UpstreamAuthError:
-        print("[-] upstream rejected credentials (407). Re-run and re-enter them.")
+        print(_err("upstream rejected credentials (407). Re-run and re-enter them."))
     except Exception as exc:
-        print(f"[-] IP check failed: {redact(str(exc))}")
+        print(_err(f"IP check failed: {redact(str(exc))}"))
 
 
 def cmd_status(server: ProxyServer, session: SessionState, state: dict) -> None:
     up = time.time() - server.started_at if server.started_at else 0
-    print(f"[*] listening: {server.listening} (127.0.0.1:{server.config.local_port})")
+    alive = paint("yes", C.GREEN, C.BOLD) if server.listening else paint("no", C.RED, C.BOLD)
+    print(_info(f"listening: {alive} {paint(f'(127.0.0.1:{server.config.local_port})', C.DIM)}"))
     scheme = "https" if server.config.upstream_tls else "http"
-    print(f"[*] upstream: {scheme}://{server.config.upstream_host}:{server.config.upstream_port}")
-    print(f"[*] session: {session.label()}")
-    print(f"[*] flags: {format_flags(session)}")
-    print(f"[*] {format_lifetime(session)}")
+    print(_info(f"upstream: {paint(f'{scheme}://{server.config.upstream_host}:{server.config.upstream_port}', C.BOLD)}"))
+    print(_info(f"session: {paint(session.label(), C.BOLD, C.MAGENTA)}"))
+    print(_info(_kv("flags:", format_flags(session))))
+    life = format_lifetime(session).removeprefix("lifetime: ")
+    print(_info(_kv("lifetime:", paint(life, C.YELLOW))))
     if state.get("last_ip"):
-        print(f"[*] last exit IP: {state['last_ip']}")
-    print(f"[*] uptime: {up:.0f}s  plain-requests: {server.request_count}  tunnels: {server.connect_count}")
+        print(_info(f"last exit IP: {paint(state['last_ip'], C.BOLD, C.GREEN)}"))
+    print(_info(f"uptime: {up:.0f}s  plain-requests: {server.request_count}  tunnels: {server.connect_count}"))
 
 
 async def verify_rotation(cfg: Config, session: SessionState, state: dict,
@@ -264,7 +315,7 @@ async def verify_rotation(cfg: Config, session: SessionState, state: dict,
                                  upstream_tls=cfg.upstream_tls,
                                  cafile=cfg.upstream_cafile or None)
     except Exception as exc:
-        print(f"[-] post-rotation check failed: {redact(str(exc))}")
+        print(_err(f"post-rotation check failed: {redact(str(exc))}"))
         return
     state["last_ip"] = ip
     loc = ""
@@ -280,15 +331,16 @@ async def verify_rotation(cfg: Config, session: SessionState, state: dict,
     changed = old_ip is not None and ip != old_ip
     detail = f"{ip}" + (f" ({loc})" if loc else "")
     if old_ip is None:
-        print(f"[+] current exit IP: {detail}")
+        print(_ok(f"current exit IP: {paint(detail, C.BOLD, C.GREEN)}"))
     elif changed:
-        print(f"[+] exit IP changed: {old_ip} -> {detail}")
+        print(_ok(f"exit IP changed: {paint(old_ip, C.DIM)} -> {paint(detail, C.BOLD, C.GREEN)}"))
     else:
-        print(f"[*] exit IP unchanged: {detail} (Evomi may reuse peers; rotate again if needed)")
+        print(_info(f"exit IP unchanged: {paint(detail, C.BOLD)} "
+                    f"{paint('(Evomi may reuse peers; rotate again if needed)', C.DIM)}"))
     if cfg.notify:
         title = "proxy-bridge: IP changed" if changed else "proxy-bridge: rotation verified"
         if not await desktop_notify(title, detail):
-            print("[*] (install `notify-send` / libnotify to get desktop popups)")
+            print(_info(paint("(install `notify-send` / libnotify to get desktop popups)", C.DIM)))
 
 
 async def async_main() -> int:
@@ -296,7 +348,7 @@ async def async_main() -> int:
     cfg_env = parse_args_with_env()
     cfg, env, env_path = cfg_env[0], cfg_env[1], cfg_env[2]
     if env and dotenv_exposed(env_path):
-        print(f"[!] warning: {env_path} is readable by others; run `chmod 600 {env_path}`")
+        print(_warn(f"{env_path} is readable by others; run `chmod 600 {env_path}`"))
     username, password = prompt_credentials(cfg, env)
     cfg.username = username
     session = SessionState(password)
@@ -306,12 +358,17 @@ async def async_main() -> int:
     server = ProxyServer(cfg, session)
     await server.start()
     scheme = "https" if cfg.upstream_tls else "http"
-    print(f"[+] bridge up: 127.0.0.1:{cfg.local_port} -> {scheme}://{cfg.upstream_host}:{cfg.upstream_port}")
+    rule = paint("\u2501" * 46, C.DIM)
+    print(paint("\n  p r o x y - b r i d g e", C.BOLD, C.CYAN))
+    print(rule)
+    print(_kv("  listen  ", f"127.0.0.1:{cfg.local_port}"))
+    print(_kv("  upstream", f"{scheme}://{cfg.upstream_host}:{cfg.upstream_port}"))
+    print(_kv("  session ", session.label()))
+    print(rule)
     if cfg.upstream_tls and not cfg.upstream_host.endswith("evomi-proxy.com"):
-        print("[!] warning: upstream TLS hostname is outside *.evomi-proxy.com;")
-        print("    Evomi's certificate covers evomi-proxy.com, so verification may fail.")
-        print("    Use an *.evomi-proxy.com host on port 1001 for HTTPS upstreams.")
-    print(f"[*] initial {session.label()}")
+        print(_warn("upstream TLS hostname is outside *.evomi-proxy.com;"))
+        print(paint("    Evomi's certificate covers evomi-proxy.com, so verification may fail.", C.DIM))
+        print(paint("    Use an *.evomi-proxy.com host on port 1001 for HTTPS upstreams.", C.DIM))
     print(HELP, flush=True)
 
     stop = threading.Event()
@@ -328,26 +385,27 @@ async def async_main() -> int:
                     old_ip = state.get("last_ip")
                     label = session.rotate()
                     closed = server.retire_idle_upstreams()
-                    print(f"[+] rotated to {label} (retired {closed} idle upstream socket(s))")
-                    print("    New connections use the new session. Existing browser tabs/tunnels")
-                    print("    may keep the old exit IP until they reconnect; verifying ...")
+                    print(_ok(f"rotated to {paint(label, C.BOLD, C.MAGENTA)} "
+                              f"{paint(f'(retired {closed} idle upstream socket(s))', C.DIM)}"))
+                    print(paint("    New connections use the new session. Old tunnels drain naturally;", C.DIM))
+                    print(paint("    verifying new exit IP ...", C.DIM))
                     asyncio.ensure_future(verify_rotation(cfg, session, state, old_ip))
                 elif key == "i":
                     await cmd_ip(cfg, session, state)
                 elif key == "s":
                     cmd_status(server, session, state)
                 elif key == "q":
-                    print("[*] shutting down ...")
+                    print(_info("shutting down ..."))
                     return 0
                 elif key == "h":
                     print(HELP)
     except (KeyboardInterrupt, asyncio.CancelledError):
-        print("\n[*] interrupted, shutting down ...")
+        print(_info("\ninterrupted, shutting down ..."))
         return 0
     finally:
         stop.set()
         await server.stop()
-        print("[*] bridge stopped, sockets closed.")
+        print(_info("bridge stopped, sockets closed."))
 
 
 def main() -> int:

@@ -44,7 +44,8 @@ python3 main.py --username myuser --upstream-host rp.evomi.com --upstream-port 1
 
 Hotkeys (single keypress, no Enter, no root): `r` rotate+verify+notify,
 `i` proxy info (flags, lifetime, exit IP, geo), `s` status, `q` quit.
-Ctrl+C also shuts down cleanly.
+Ctrl+C also shuts down cleanly. Output is colored on TTYs; set `NO_COLOR=1`
+to force plain text (useful when piping to logs).
 
 ## HTTPS upstream (e.g. `*.evomi-proxy.com:1001`)
 

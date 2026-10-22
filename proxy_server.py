@@ -379,6 +379,75 @@ def _status_code(resp_head: bytes) -> str:
     return parts[1] if len(parts) > 1 else ""
 
 
+class _NestedTLS:
+    """TLS stream nested inside an existing tunnel socket (MemoryBIO pump).
+
+    Needed for HTTPS targets behind an HTTPS (TLS) upstream: CPython cannot
+    stack a second wrap_socket() on an SSLSocket, so the outer handshake runs
+    on explicit BIOs pumped through the inner socket. Exposes a minimal
+    sendall/recv/close/settimeout surface like a socket.
+    """
+
+    def __init__(self, inner, hostname: str, timeout: float,
+                 cafile: str | None = None) -> None:
+        ctx = ssl.create_default_context(cafile=cafile)
+        self._inner = inner
+        self._incoming = ssl.MemoryBIO()
+        self._outgoing = ssl.MemoryBIO()
+        self._ssl = ctx.wrap_bio(self._incoming, self._outgoing,
+                                 server_side=False, server_hostname=hostname)
+        self._timeout = timeout
+        try:
+            self._drive(self._ssl.do_handshake)
+        except ssl.CertificateError as exc:
+            raise UpstreamError(f"TLS hostname check failed: {redact(str(exc))}") from exc
+
+    def settimeout(self, timeout: float) -> None:
+        self._timeout = timeout
+        self._inner.settimeout(timeout)
+
+    def _flush(self) -> None:
+        data = self._outgoing.read()
+        if data:
+            self._inner.sendall(data)
+
+    def _drive(self, fn, *args):
+        self._inner.settimeout(self._timeout)
+        while True:
+            try:
+                result = fn(*args)
+            except ssl.SSLWantReadError:
+                self._flush()
+                chunk = self._inner.recv(16384)
+                if not chunk:
+                    raise UpstreamError("upstream tunnel closed mid-stream")
+                self._incoming.write(chunk)
+                continue
+            except ssl.SSLWantWriteError:
+                self._flush()
+                continue
+            self._flush()
+            return result
+
+    def sendall(self, data: bytes) -> None:
+        view = memoryview(data)
+        while view:
+            view = view[self._drive(self._ssl.write, view):]
+
+    def recv(self, n: int) -> bytes:
+        return self._drive(self._ssl.read, n)
+
+    def close(self) -> None:
+        try:
+            self._flush()
+        except OSError:
+            pass
+        try:
+            self._inner.close()
+        except OSError:
+            pass
+
+
 def _blocking_get_via_upstream(username: str, password: str, upstream_host: str,
                                upstream_port: int, upstream_tls: bool,
                                target_host: str, target_port: int,
@@ -418,9 +487,13 @@ def _blocking_get_via_upstream(username: str, password: str, upstream_host: str,
         if code != "200":
             raise UpstreamError(f"CONNECT refused: {redact(_status_line(head))}")
         if use_tls:
-            ctx = ssl.create_default_context()
-            sock = ctx.wrap_socket(sock, server_hostname=target_host)
-            sock.settimeout(timeout)
+            if isinstance(sock, ssl.SSLSocket):
+                # TLS target inside a TLS upstream tunnel: stack via BIOs.
+                sock = _NestedTLS(sock, target_host, timeout, cafile)  # type: ignore[assignment]
+            else:
+                ctx = ssl.create_default_context(cafile=cafile)
+                sock = ctx.wrap_socket(sock, server_hostname=target_host)
+                sock.settimeout(timeout)
         sock.sendall(f"GET {path} HTTP/1.1\r\nHost: {target_host}\r\n"
                      f"Connection: close\r\n\r\n".encode())
         data = b""

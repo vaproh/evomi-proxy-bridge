@@ -41,9 +41,13 @@ async def read_http_response(reader: asyncio.StreamReader) -> tuple[str, bytes]:
 class FakeUpstream:
     """Configurable fake Evomi upstream: records auth, canned responses."""
 
-    def __init__(self, mode: str = "ok", delay: float = 0.0):
+    def __init__(self, mode: str = "ok", delay: float = 0.0,
+                 pipe_target: tuple[str, int] | None = None):
         self.mode = mode  # ok | authfail
         self.delay = delay
+        # When set, CONNECT tunnels are piped as raw TCP to this target
+        # (lets the test client handshake TLS end-to-end with the target).
+        self.pipe_target = pipe_target
         self.seen_tokens: list[str | None] = []
         self.server: asyncio.AbstractServer | None = None
 
@@ -57,6 +61,34 @@ class FakeUpstream:
         self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0, ssl=ctx)
         sock = self.server.sockets[0]
         return sock.getsockname()[0], sock.getsockname()[1]
+
+    @staticmethod
+    async def _pipe_raw(c_r, c_w, host: str, port: int) -> None:
+        t_r, t_w = await asyncio.open_connection(host, port)
+
+        async def fwd(src, dst) -> None:
+            try:
+                while True:
+                    chunk = await src.read(65536)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    await dst.drain()
+            except (ConnectionError, OSError):
+                pass
+
+        t1 = asyncio.ensure_future(fwd(c_r, t_w))
+        t2 = asyncio.ensure_future(fwd(t_r, c_w))
+        try:
+            await asyncio.wait((t1, t2), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for t in (t1, t2):
+                if not t.done():
+                    t.cancel()
+            try:
+                t_w.close()
+            except Exception:
+                pass
 
     async def stop(self) -> None:
         if self.server is not None:
@@ -83,6 +115,9 @@ class FakeUpstream:
             if method == "CONNECT":
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()
+                if self.pipe_target:
+                    await self._pipe_raw(reader, writer, *self.pipe_target)
+                    return
                 # echo tunnel
                 while True:
                     chunk = await reader.read(65536)
@@ -588,6 +623,67 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await up.stop()
         asyncio.get_event_loop_policy().new_event_loop().run_until_complete(go())
+
+    async def test_nested_tls_ip_check(self):
+        # TLS upstream + TLS target: outer handshake must run via BIO pump
+        # (double wrap_socket cannot stack; regression test for UNEXPECTED_MESSAGE).
+        import os as _os
+        import ssl as _ssl
+        from proxy_server import _blocking_get_via_upstream
+
+        async def https_stub(reader, writer) -> None:
+            try:
+                await read_head(reader)
+                body = b"203.0.113.7\n"
+                writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n"
+                             b"Connection: close\r\n\r\n" + body)
+                await writer.drain()
+            except (ConnectionError, OSError):
+                pass
+            finally:
+                try:
+                    writer.close()
+                except Exception:
+                    pass
+
+        crt = _os.path.join(FIXTURES, "localhost.crt")
+        key = _os.path.join(FIXTURES, "localhost.key")
+        server_ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(crt, key)
+        stub = await asyncio.start_server(https_stub, "127.0.0.1", 0, ssl=server_ctx)
+        tport = stub.sockets[0].getsockname()[1]
+        up = FakeUpstream(pipe_target=("127.0.0.1", tport))
+        _, uport = await up.start(tls_cert=crt, tls_key=key)
+        try:
+            body = await asyncio.to_thread(
+                _blocking_get_via_upstream,
+                "u", "p", "127.0.0.1", uport, True,
+                "localhost", tport, "/s", True, 10.0, crt)
+            self.assertIn(b"203.0.113.7", body)
+        finally:
+            await up.stop()
+            stub.close()
+            await stub.wait_closed()
+
+    def test_paint_respects_color_switch(self):
+        import main as _main
+        old, _main._COLOR = _main._COLOR, False
+        try:
+            self.assertEqual(_main.paint("hi", _main.C.BOLD), "hi")
+            self.assertEqual(_main._ok("x"), "[+] x")
+        finally:
+            _main._COLOR = old
+
+    def test_paint_emits_ansi_when_enabled(self):
+        import main as _main
+        old, _main._COLOR = _main._COLOR, True
+        try:
+            out = _main.paint("hi", _main.C.BOLD, _main.C.GREEN)
+            self.assertTrue(out.startswith("\033["))
+            self.assertTrue(out.endswith("\033[0m"))
+            self.assertIn("hi", out)
+        finally:
+            _main._COLOR = old
 
 if __name__ == "__main__":
     unittest.main()
