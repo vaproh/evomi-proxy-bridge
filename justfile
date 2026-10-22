@@ -1,29 +1,32 @@
-# justfile for evomi-proxy-bridge (https://just.systems)
-# Run `just` with no args to list recipes.
-
-py := "python3"
+# justfile for evomi-proxy-bridge (Tauri + Rust core)
+# Local Linux note: ayatana-appindicator3 has no dev package here (no sudo),
+# so a shimmed .pc lives at ~/.local/lib/pkgconfig (see README). The export
+# below picks it up; CI installs the real dev packages instead.
+export PKG_CONFIG_PATH := env_var_or_default("HOME", "/root") + "/.local/lib/pkgconfig:" + env_var_or_default("PKG_CONFIG_PATH", "")
 
 # list recipes
 default:
     @just --list
 
-# run the bridge (reads .env automatically)
-run *args:
-    {{ py }} main.py {{ args }}
-
-# offline unit tests
+# rust core tests (fake upstream + TLS fixtures, no network)
 test:
-    {{ py }} -m unittest discover -s tests -v
+    cargo test -p evomi-bridge-core
 
-# compile check + offline tests
+# fast typecheck of everything
 check:
-    {{ py }} -m py_compile config.py main.py proxy_server.py
-    {{ py }} -m unittest discover -s tests
+    cargo check --workspace
 
-# live test against real Evomi creds (requires EVOMI_USER/EVOMI_PASS in env)
-live-test:
-    EVOMI_LIVE_TEST=1 {{ py }} -m unittest tests.test_live -v
+# production build (bundles land in src-tauri/target/release/bundle/)
+build:
+    cd src-tauri && cargo tauri build
 
-# remove bytecode caches
+# run the desktop app in dev mode
+dev:
+    cd src-tauri && cargo tauri dev
+
+# regenerate icons from an svg source
+icon src="icons/icon.svg":
+    cd src-tauri && cargo tauri icon {{ src }}
+
 clean:
-    rm -rf __pycache__ tests/__pycache__
+    cargo clean

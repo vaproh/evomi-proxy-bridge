@@ -1,0 +1,17 @@
+[package]
+name = "evomi-bridge-core"
+version = "0.5.0"
+edition = "2021"
+description = "Local Evomi proxy bridge core: HTTP proxy, CONNECT tunneling, session rotation"
+
+[dependencies]
+tokio = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rustls-pemfile = "2"
+webpki-roots = "1"
+getrandom = "0.2"
+log = "0.4"
+
+[dev-dependencies]
+rcgen = "0.13"

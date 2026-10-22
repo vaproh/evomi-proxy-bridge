@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Evomi Bridge</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo"><span class="logo-mark"></span> Evomi Bridge</div>
+    <div id="status-dot" class="dot stopped" title="bridge state"></div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="status">Status</button>
+    <button class="tab" data-tab="logs">Logs <span id="log-badge" class="badge hidden"></span></button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <section id="tab-status" class="pane active">
+      <div class="power-wrap">
+        <button id="power" class="power off" title="start / stop bridge">
+          <svg viewBox="0 0 24 24"><path d="M12 3v9" /><path d="M6.3 6.3a8 8 0 1 0 11.4 0" /></svg>
+        </button>
+        <div id="state-line" class="state-line">stopped</div>
+        <div id="quip" class="quip"></div>
+      </div>
+
+      <div class="card ip-card">
+        <div class="label">exit ip</div>
+        <div id="exit-ip" class="ip">—</div>
+        <div id="geo" class="geo">press check to verify</div>
+        <div class="row">
+          <button id="btn-rotate" class="btn primary">Rotate</button>
+          <button id="btn-check" class="btn">Check IP</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="label">session</div>
+        <div id="session-label" class="mono">—</div>
+        <div class="type-row" id="type-row">
+          <button data-type="session" class="chip">session</button>
+          <button data-type="hard" class="chip">hard</button>
+          <button data-type="locked" class="chip">locked</button>
+        </div>
+        <div id="flags" class="flags">—</div>
+        <div class="life-row">
+          <svg id="ring" viewBox="0 0 44 44">
+            <circle cx="22" cy="22" r="18" class="ring-bg" />
+            <circle cx="22" cy="22" r="18" class="ring-fg" id="ring-fg" />
+          </svg>
+          <div>
+            <div id="lifetime" class="mono">lifetime —</div>
+            <div class="row small-gap">
+              <input id="lifetime-input" type="number" min="0" max="1440" placeholder="min" />
+              <button id="btn-lifetime" class="btn small">Set</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mini">
+        <div class="kv"><span>upstream</span><span id="upstream" class="mono">—</span></div>
+        <div class="kv"><span>listening</span><span id="listening" class="mono">—</span></div>
+        <div class="kv"><span>requests / tunnels</span><span id="counts" class="mono">0 / 0</span></div>
+        <div class="kv"><span>pac</span><span class="mono pac-line"><span id="pac-url">—</span><button id="btn-pac" class="link" title="copy PAC url">copy</button></span></div>
+      </div>
+    </section>
+
+    <section id="tab-logs" class="pane">
+      <div class="row log-bar">
+        <label class="autoscroll"><input type="checkbox" id="autoscroll" checked /> follow</label>
+        <button id="btn-clear-logs" class="btn small">Clear</button>
+      </div>
+      <div id="log-list" class="log-list"></div>
+    </section>
+
+    <section id="tab-settings" class="pane">
+      <div class="card form">
+        <label>Evomi username<input id="set-username" type="text" autocomplete="off" /></label>
+        <label>Password / flags<input id="set-password" type="password" placeholder="(unchanged)" autocomplete="off" /></label>
+        <div class="row2">
+          <label>Upstream host<input id="set-host" type="text" /></label>
+        </div>
+        <div class="row2">
+          <label>Port<input id="set-port" type="number" min="1" max="65535" /></label>
+          <label class="check"><input id="set-tls" type="checkbox" /> https upstream</label>
+        </div>
+        <div class="row2">
+          <label>Local port<input id="set-local-port" type="number" min="1" max="65535" /></label>
+          <label class="check"><input id="set-notify" type="checkbox" /> desktop notify</label>
+        </div>
+        <div class="row2">
+          <label>Local user<input id="set-local-user" type="text" autocomplete="off" /></label>
+          <label>Local pass<input id="set-local-pass" type="password" autocomplete="off" /></label>
+        </div>
+        <div class="row2">
+          <label>Type
+            <select id="set-type">
+              <option value="session">session</option>
+              <option value="hard">hard</option>
+              <option value="locked">locked</option>
+            </select>
+          </label>
+          <label>Lifetime (min)<input id="set-lifetime" type="number" min="0" max="1440" /></label>
+        </div>
+        <button id="btn-save" class="btn primary wide">Save &amp; restart</button>
+        <div id="env-path" class="env-path"></div>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="toast hidden"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

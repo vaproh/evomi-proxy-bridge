@@ -1,236 +1,91 @@
-# Evomi Proxy Bridge
+# Evomi Bridge (Tauri GUI)
 
-Local HTTP proxy on `127.0.0.1:8899` that chains Mullvad Browser (or any app)
-to Evomi residential proxies (`rp.evomi.com:1000`), with terminal-hotkey
-session rotation. Stdlib only, no runtime dependencies.
+A floating desktop window that chains your browser to Evomi residential proxies:
+loopback HTTP proxy (`127.0.0.1:8899`) with CONNECT tunneling, authenticated
+upstream (plain or TLS with hostname verification), one-click session rotation,
+exit-IP + geo verification, PAC auto-config, and a live log view.
 
-Verified against Evomi docs (Oct 2026): sessions are password suffixes like
-`basepassword_country-US_session-<id>`; session ids are 6-10 alphanumerics
-(this bridge uses 8 hex chars via `secrets.token_hex(4)`); the `session` type
-may change IP for stability; exit-IP check endpoint is `https://ip.evomi.com/s`.
+Rust core (`crates/bridge`, 27 tests) + Tauri shell + vanilla HTML/CSS/JS UI.
+Windows and Linux. No Python, no Docker, no paid dependencies.
 
-## Install & run
+## Run it
 
+**Linux dev:**
 ```bash
-cd proxy-bridge
-python3 -m venv .venv && source .venv/bin/activate   # or: uv venv && source .venv/bin/activate
-pip install -r requirements.txt   # runtime needs nothing; file pins test tooling only
-python3 main.py
-# or with just (https://just.systems): just run | just test | just check | just live-test
+just dev        # debug window (needs webkit2gtk dev libs)
+just build      # .deb + .rpm in target/release/bundle/
 ```
 
-## Windows
+> Local note: this machine has no ayatana-appindicator dev package (no sudo),
+> so a shimmed `.pc` lives at `~/.local/lib/pkgconfig` (picked up by the
+> justfile). CI installs the real dev packages.
 
-Double-click or run from a terminal (no admin needed):
+**From a release:** install the `.deb`/`.rpm` (Linux) or `.msi`/`.exe`
+(Windows), launch "Evomi Bridge".
 
-```bat
-run.bat
-run.bat --local-port 8900 --upstream-tls
-```
+## First run
 
-`run.bat` installs `uv` automatically if missing (official installer), lets `uv`
-provision Python 3.12, and launches the bridge; extra arguments are forwarded
-to `main.py`. Hotkeys work keypress-by-keypress (no Enter) via the console,
-and rotation notifications use a Windows toast when available, falling back
-to a terminal hint. Everything else (`.env`, PAC URL, Mullvad setup) works
-the same as on Linux.
-
-**Firewall: nothing to allow.** The bridge binds `127.0.0.1` only and verifies
-the loopback binding at startup, so Windows Firewall has no LAN exposure to
-prompt about. If Windows ever shows a firewall prompt for this program,
-decline it and report it - that would mean the loopback-only invariant broke.
-
-You will be prompted for your Evomi username and password (hidden input,
-kept in process memory only, never written to disk or shown in `ps`/history).
-Two input styles are accepted at the password prompt:
-
-- a base password, or
-- a full dashboard string with Evomi flags, e.g.
-  `XXXXXXXXXXXXXXXXXX_country-GB,US,AE,DE,FR,IT_session-B4KINYMKS_lifetime-15`
-  (session id, `hardsession-`/`lockedsession-`, `lifetime-N`, geo flags, ...).
-
-Rotation (`r`) swaps only the session id and keeps every other flag.
-Alternatively, paste a complete proxy URL at the username prompt:
-
-```bash
-http://exampleuser:XXXX_country-GB,US_session-Ab12Cd34_lifetime-15@core-residential.evomi.com:1000
-```
-
-and user, password, upstream host and port are all taken from it. Then:
-
-```bash
-python3 main.py --help
-python3 main.py --username myuser --upstream-host rp.evomi.com --upstream-port 1000
-```
-
-Hotkeys (single keypress, no Enter, no root): `r` rotate+verify+notify,
-`t` cycle session type, `l` set lifetime, `i` proxy info, `s` status, `q` quit.
-Ctrl+C also shuts down cleanly. Output is colored on TTYs (Windows 10+
-consoles included - ANSI mode is enabled at startup); set `NO_COLOR=1`
-to force plain text (useful when piping to logs).
-
-## Session time and hard sessions
-
-Sticky sessions default to Evomi's 30-minute window (or the `lifetime-N` flag
-in your pasted password). Control it at startup or at runtime:
-
-- `--session-type session|hardsession|lockedsession` (or `EVOMI_SESSION_TYPE`):
-  `hardsession` keeps the same IP as long as possible, `lockedsession` fails
-  instead of swapping peers. Switching type generates a fresh session id;
-  the `lifetime` flag is dropped for hard/locked types (Evomi ignores it there).
-- `--lifetime N` / `EVOMI_LIFETIME=N` (1-1440 minutes, `session` type only).
-- At runtime: `t` cycles session → hard → locked (verifies + notifies like `r`),
-  `l` prompts for minutes (`0` clears the flag back to Evomi's default,
-  empty cancels). Changing either verifies the new exit IP and pops a
-  desktop notification, same as rotation.
-
-## HTTPS upstream (e.g. `*.evomi-proxy.com:1001`)
-
-Paste your `https://host:port:user:pass_flags` string (or set
-`EVOMI_PROXY_URL`, or `--upstream-host ... --upstream-port 1001 --upstream-tls`).
-The bridge wraps the upstream leg in TLS and verifies the certificate hostname
-against the configured host (plain Python `ssl`, no custom code); a mismatch
-or untrusted cert fails the request with 502 instead of sending credentials.
-Per Evomi's docs the TLS certificate covers `evomi-proxy.com`, so an
-`https://` host outside `*.evomi-proxy.com` prints a warning at startup.
-The browser-to-bridge hop stays plain HTTP on loopback (`127.0.0.1`), which is
-correct: loopback is trusted and browsers speak plain HTTP to local proxies.
-
-## `.env` file (optional)
-
-Proxy details can live in a `.env` file instead of prompts/flags:
-
-```bash
-cp .env.example .env && chmod 600 .env
-${EDITOR:-nano} .env
-python3 main.py            # picks up .env automatically
-python3 main.py --env-file /path/to/other.env
-```
-
-Supported keys: `EVOMI_PROXY_URL` (full `http://user:pass_flags@host:port`),
-`EVOMI_USERNAME`, `EVOMI_PASSWORD` (flags allowed), `EVOMI_UPSTREAM_HOST`,
-`EVOMI_UPSTREAM_PORT`, `EVOMI_UPSTREAM_TLS` (`true` for `https://` endpoints), `EVOMI_LOCAL_PORT`, `EVOMI_LOCAL_USER`,
-`EVOMI_LOCAL_PASS`, `EVOMI_CONNECT_TIMEOUT`, `EVOMI_MAX_CONNECTIONS`,
-`EVOMI_NOTIFY`. Precedence: CLI flags > `.env` > defaults; anything still
-missing (username/password) is prompted. Quoting, `export ` prefixes and
-full-line `#` comments are accepted; no escape processing is done.
-
-Security: `.env` holds your password on disk, so the bridge warns if it is
-readable by anyone but you, `.env.example` ships with empty values, and
-`.gitignore` excludes `.env`. Prefer prompts on shared machines.
-
-After each rotation the bridge re-checks the exit IP in the background and
-pops a Linux desktop notification (`notify-send` from libnotify, no extra
-Python deps) with the new IP and location; `--no-notify` disables this.
-Geo info is a best-effort lookup via free ip-api.com through the same proxy
-tunnel and may occasionally be unavailable or rate-limited.
-
-Optional local auth (off by default; the loopback listener otherwise accepts
-any local process — see Limitations):
-
-```bash
-python3 main.py --local-user me --local-pass 'long-random-string'
-```
+1. Open **Settings**, enter your Evomi username and password (or paste a full
+   `http://user:pass_flags@host:port` / `https://host:port:user:pass` string -
+   either field accepts it). HTTPS upstream? Tick **https upstream** and use
+   port 1001 with an `*.evomi-proxy.com` host.
+2. **Save & restart** - credentials are stored in `.env` under the app config
+   dir (`~/.config/evomi-proxy-bridge/` on Linux), `chmod 600`.
+3. The bridge starts automatically. Point Mullvad Browser at it (below), then
+   hit **Rotate** and **Check IP** on the Status tab.
 
 ## Mullvad Browser setup
 
-Mullvad Browser is Firefox-based, so proxy setup follows the Firefox UI. No
-startup flags or custom profiles are used or needed; I did not verify the
-exact menu labels of your installed version, so names below may differ
-slightly (Settings → search "proxy" if lost).
+Settings → Network Settings → Manual proxy configuration:
 
-1. Open Mullvad Browser → Settings → Network Settings → **Settings…** →
-   **Manual proxy configuration**.
-2. HTTP Proxy: `127.0.0.1`, Port: `8899`.
-3. Tick **"Also use this proxy for HTTPS"**.
-4. Leave SOCKS empty. Keep DNS-over-HTTPS as-is (HTTP(S) proxying resolves
-   hostnames at the proxy; see leak test below). Do not change the user
-   agent or fingerprinting settings.
+- HTTP Proxy `127.0.0.1`, port `8899`, tick **"Also use this proxy for HTTPS"**.
+- Or fully automatic: set the browser's **Automatic proxy configuration URL**
+  to the PAC address shown on the Status tab
+  (`http://127.0.0.1:8899/proxy.pac`).
 
-   **Alternative: auto-config URL (no manual host/port).** In the same
-   Network Settings dialog choose **Automatic proxy configuration URL** and
-   enter `http://127.0.0.1:8899/proxy.pac`. The bridge serves this PAC file
-   itself (nothing to host anywhere); it routes all browser traffic through
-   the bridge. The URL is printed in the startup banner and in `s` status. If
-   you run the bridge on a different `--local-port`, adjust the URL port.
+Verify: visit `https://ip.evomi.com/s`, or press **Check IP** - the exit IP,
+country, and ISP appear in the window and in a desktop notification after
+each rotation. Compare against a leak test (e.g. dnsleaktest.com): with the
+proxy active you should see the Evomi exit, never your ISP.
 
-Test it: press `i` in the bridge terminal (independent check through the same
-upstream, plus geo) or visit `https://ip.evomi.com/s` in the browser. Then compare against a
-leak test such as `https://www.dnsleaktest.com`: with the proxy active, the
-shown IP/country should match the Evomi exit IP, not your ISP. A mismatch
-between the page and your real ISP address means proxying works; identical
-ISP values mean a direct connection or DNS leak — recheck steps 1-3 and that
-the bridge terminal shows request counts growing (press `s`).
+## What each control does
 
-## Browser-session vs proxy-session (two workflows)
-
-Rotating the proxy session (`r`) changes only the upstream exit IP used by
-**new** connections. It does not clear cookies, cache, localStorage, or site
-data, and it does not reset browser identity. Two options:
-
-- **Keep the browser open, press `r`**: subsequent new connections use the new
-  session. Fast, but existing tabs/keep-alive connections and all stored site
-  data persist — sites can still recognize you by cookies/fingerprint.
-- **Close Mullvad Browser, press `r`, reopen (New Identity if offered)**:
-  full reset — new exit IP *and* clean browser state. Use this when you need
-  sites to see a fresh visitor.
+- **Power button / tray Start-Stop**: starts or stops the local listener.
+- **Rotate**: new random session id (all other password flags kept), old
+  tunnels drain, then the exit IP is re-verified and a desktop notification
+  shows the new IP + location. A new id does **not** guarantee a new IP -
+  only the check confirms it.
+- **Type chips (session/hard/locked)**: Evomi sticky-session modes; switching
+  mints a fresh id. Hard/locked drop the lifetime flag.
+- **Lifetime**: sticky minutes (1-1440, default 30 for `session`); the ring
+  counts down to expiry. `0` clears it.
+- **Logs tab**: live bridge log (follows, keeps last ~400 lines on screen).
+- **Tray**: show/hide, rotate, check IP, start/stop, quit. Closing the window
+  hides to tray; the bridge keeps running. Tooltip shows the current exit IP.
 
 ## Troubleshooting
 
-- **407 / "Upstream auth failed"**: wrong Evomi username or base password,
-  or a typo at the prompt. Restart and re-enter. The bridge never logs
-  credentials; check the Evomi dashboard that the account has balance.
-- **Exit IP unchanged after `r`**: expected sometimes — Evomi may reassign
-  the same peer, and existing keep-alive tunnels/websockets keep the old IP
-  until they reconnect. Press `i` twice (before/after) for an independent
-  check; open a fresh tab or restart the browser if a tab reuses a tunnel.
-- **CONNECT failures / pages hang on HTTPS**: upstream port 1000 may be
-  blocked on your network, or `rp.evomi.com` fails to resolve. Try the
-  alternate HTTPS endpoint: `--upstream-host rp.evomi-proxy.com
-  --upstream-port 1001` (same credentials). Check status.evomi.com.
-- **Location shows "unavailable"**: geo comes from free ip-api.com through
-  the proxy tunnel and can be rate-limited; the exit IP itself is authoritative
-  (it comes from Evomi). Your configured `country-...` targeting flags are
-  always shown by `i`/`s` regardless.
-- **Upstream 502 for some sites, others load fine** (`upstream CONNECT refused
-  for host:port: HTTP/1.1 502 Bad Gateway`): the bridge, auth, and TLS leg are
-  working (prove it: `i` succeeds and plain sites load through the proxy). The
-  502 comes from Evomi's side for that specific target: the pinned exit peer
-  cannot route to it right now, or Evomi refuses that host/port. Press `r` to
-  rotate to a new exit IP and retry the page; if a host fails on every session,
-  it is an Evomi-side restriction, not a bridge bug. The refusal log names the
-  target `host:port` so you can tell which sites are affected. Repeat refusals
-  for the same target log once per 10 minutes (repeats go to debug) so
-  connectivity-probe hosts (e.g. `ds6.probe.whatismyipaddress.com`, which some
-  IP-check sites poll) don't spam the log; the browser still gets the 502.
-- **Port 8899 in use**: stop the other program or pass `--local-port 8900`
-  and update the browser port to match.
-- **Nothing loads, bridge shows no requests**: browser is not using the
-  proxy (recheck Manual configuration) or another profile/window bypasses it.
+- **Upstream auth failed (407)**: wrong username/password - re-enter in Settings.
+- **Upstream 502 for some sites, others fine**: comes from Evomi's side for that
+  specific target (exit peer can't route to it). Rotate and retry; repeats for
+  the same target log once per 10 minutes (repeats go to debug) so probe
+  hosts don't spam the Logs tab - the browser still gets the 502.
+- **Exit IP unchanged after Rotate**: Evomi may reuse the peer; rotate again.
+  Persistent browser tabs keep old tunnels until they reconnect.
+- **TLS hostname failure**: the HTTPS certificate covers `*.evomi-proxy.com` -
+  an `https://` host outside it warns at startup and fails closed (502, no
+  credentials sent).
 
-## Limitations (honest)
+## Build system
 
-- A new session id does **not** guarantee a new exit IP; only the `i` check
-  (or `ip.evomi.com/s` in-browser) confirms a change.
-- Persistent browser connections (keep-alive, websockets, downloads) opened
-  before rotation keep the old exit IP until closed. The bridge never kills
-  active tunnels mid-stream; rotation retires idle sockets only.
-- One upstream TCP connection per request (`Connection: close`, no
-  keep-alive reuse): slightly more handshake overhead, deliberately traded
-  for rotation correctness.
-- Local listener has **no authentication by default**; any local process can
-  use it. It binds `127.0.0.1` only (never LAN), and `--local-user/--local-pass`
-  enables Basic auth if you want it.
-- Plain-HTTP forwarding only relays `http://` absolute URIs; exotic methods
-  with bodies over 32 MiB are rejected. CONNECT tunnels carry anything
-  (including HTTPS) byte-for-byte without interception — TLS is never
-  decrypted.
+Every `v*` tag push runs `.github/workflows/release.yml`: Rust tests, then
+Tauri builds for Linux + Windows, attached to a GitHub release with
+auto-generated notes. `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
-## Tests
+## Layout
 
-```bash
-python3 -m unittest discover -s tests -v        # offline unit tests
-EVOMI_LIVE_TEST=1 EVOMI_USER=... EVOMI_PASS=... python3 -m unittest tests.test_live -v  # opt-in real-credential test
 ```
-
-Never runs real proxy traffic unless you explicitly opt in via `EVOMI_LIVE_TEST=1`.
+crates/bridge/   core proxy: server, CONNECT, TLS, checks, sessions, PAC, logs
+src-tauri/       Tauri shell: commands, tray, notifications, window config
+ui/              static frontend: index.html, styles.css, app.js (no build step)
+```
