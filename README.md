@@ -16,6 +16,7 @@ cd proxy-bridge
 python3 -m venv .venv && source .venv/bin/activate   # or: uv venv && source .venv/bin/activate
 pip install -r requirements.txt   # runtime needs nothing; file pins test tooling only
 python3 main.py
+# or with just (https://just.systems): just run | just test | just check | just live-test
 ```
 
 You will be prompted for your Evomi username and password (hidden input,

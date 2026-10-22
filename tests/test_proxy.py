@@ -499,10 +499,12 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(s.lifetime_minutes(), 15)
 
     def test_upstream_tls_flag_and_env(self):
+        import os as _os
         from config import parse_args
-        cfg = parse_args(["--username", "u", "--upstream-tls"])
+        # os.devnull reads as an empty env file: isolates tests from ./.env
+        cfg = parse_args(["--username", "u", "--upstream-tls", "--env-file", _os.devnull])
         self.assertTrue(cfg.upstream_tls)
-        cfg = parse_args(["--username", "u"])
+        cfg = parse_args(["--username", "u", "--env-file", _os.devnull])
         self.assertFalse(cfg.upstream_tls)
         import tempfile
         with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as fh:
