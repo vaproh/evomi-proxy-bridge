@@ -35,6 +35,11 @@ and rotation notifications use a Windows toast when available, falling back
 to a terminal hint. Everything else (`.env`, PAC URL, Mullvad setup) works
 the same as on Linux.
 
+**Firewall: nothing to allow.** The bridge binds `127.0.0.1` only and verifies
+the loopback binding at startup, so Windows Firewall has no LAN exposure to
+prompt about. If Windows ever shows a firewall prompt for this program,
+decline it and report it - that would mean the loopback-only invariant broke.
+
 You will be prompted for your Evomi username and password (hidden input,
 kept in process memory only, never written to disk or shown in `ps`/history).
 Two input styles are accepted at the password prompt:
@@ -59,9 +64,25 @@ python3 main.py --username myuser --upstream-host rp.evomi.com --upstream-port 1
 ```
 
 Hotkeys (single keypress, no Enter, no root): `r` rotate+verify+notify,
-`i` proxy info (flags, lifetime, exit IP, geo), `s` status, `q` quit.
-Ctrl+C also shuts down cleanly. Output is colored on TTYs; set `NO_COLOR=1`
+`t` cycle session type, `l` set lifetime, `i` proxy info, `s` status, `q` quit.
+Ctrl+C also shuts down cleanly. Output is colored on TTYs (Windows 10+
+consoles included - ANSI mode is enabled at startup); set `NO_COLOR=1`
 to force plain text (useful when piping to logs).
+
+## Session time and hard sessions
+
+Sticky sessions default to Evomi's 30-minute window (or the `lifetime-N` flag
+in your pasted password). Control it at startup or at runtime:
+
+- `--session-type session|hardsession|lockedsession` (or `EVOMI_SESSION_TYPE`):
+  `hardsession` keeps the same IP as long as possible, `lockedsession` fails
+  instead of swapping peers. Switching type generates a fresh session id;
+  the `lifetime` flag is dropped for hard/locked types (Evomi ignores it there).
+- `--lifetime N` / `EVOMI_LIFETIME=N` (1-1440 minutes, `session` type only).
+- At runtime: `t` cycles session → hard → locked (verifies + notifies like `r`),
+  `l` prompts for minutes (`0` clears the flag back to Evomi's default,
+  empty cancels). Changing either verifies the new exit IP and pops a
+  desktop notification, same as rotation.
 
 ## HTTPS upstream (e.g. `*.evomi-proxy.com:1001`)
 

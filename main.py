@@ -58,10 +58,13 @@ def help_text() -> str:
     d = lambda s: paint(s, C.DIM)  # noqa: E731
     return (
         f"{paint('hotkeys', C.BOLD, C.CYAN)}  "
-        f"[{k('r')}]otate  [{k('i')}]p info  [{k('s')}]tatus  [{k('q')}]uit\n"
+        f"[{k('r')}]otate  [{k('i')}]p info  [{k('s')}]tatus  "
+        f"[{k('t')}]ype  [{k('l')}]ifetime  [{k('q')}]uit\n"
         f"  {k('r')} - new random session id {d('(flags kept)')}, verify exit IP, desktop-notify\n"
         f"  {k('i')} - session, flags, lifetime + current exit IP and geo {d('(through proxy)')}\n"
         f"  {k('s')} - server status incl. flags, lifetime left, last known exit IP\n"
+        f"  {k('t')} - cycle session type {d('(session - hard - locked)')}, verify + notify\n"
+        f"  {k('l')} - set sticky lifetime minutes {d('(prompts; 0 clears)')}, verify + notify\n"
         f"  {k('q')} - graceful shutdown {d('(also Ctrl+C)')}\n"
     )
 
@@ -80,6 +83,8 @@ class SessionState:
     """
 
     _SESS_RE = re.compile(r"_(hardsession|lockedsession|session)-([A-Za-z0-9]+)")
+    _LIFE_RE = re.compile(r"_lifetime-\d+")
+    SESSION_TYPES = ("session", "hardsession", "lockedsession")
 
     def __init__(self, template: str) -> None:
         template = template.strip()
@@ -146,9 +151,67 @@ class SessionState:
             self.rotated_at = time.time()
             return f"{self._key}-{self._id} (gen {self.generation})"
 
+    def _install(self, pw: str) -> None:
+        """Replace the stored password (caller holds the lock)."""
+        m = self._SESS_RE.search(pw)
+        if not m:
+            raise ValueError("password lost its session segment")
+        self._head, self._tail = pw[:m.start()], pw[m.end():]
+        self._id = m.group(2)
+        if not self.valid_session_id(self._id):
+            raise ValueError("bad session id")
+        self.generation += 1
+        self.rotated_at = time.time()
+
+    def set_session_type(self, key: str) -> str:
+        """Switch session/hardsession/lockedsession, keeping other flags.
+
+        Fresh id (new session server-side); the lifetime flag is dropped for
+        hard/locked types since Evomi ignores it there.
+        """
+        if key not in self.SESSION_TYPES:
+            raise ValueError("session type must be session|hardsession|lockedsession")
+        with self._lock:
+            pw = f"{self._head}_{self._key}-{self._id}{self._tail}"
+            pw, n = self._SESS_RE.subn(f"_{key}-{secrets.token_hex(4)}", pw, count=1)
+            assert n == 1
+            if key != "session":
+                pw = self._LIFE_RE.sub("", pw)
+            self._key = key
+            self._install(pw)
+            return f"{key}-{self._id} (gen {self.generation})"
+
+    def set_lifetime(self, minutes: int | None) -> str:
+        """Set (or, with None, remove) the _lifetime-N flag. Session type only."""
+        if minutes is not None and (not isinstance(minutes, int) or not 1 <= minutes <= 1440):
+            raise ValueError("lifetime must be 1-1440 minutes")
+        with self._lock:
+            if self._key != "session" and minutes is not None:
+                raise ValueError("lifetime only applies to the 'session' type")
+            pw = f"{self._head}_{self._key}-{self._id}{self._tail}"
+            pw = self._LIFE_RE.sub("", pw)
+            if minutes is not None:
+                pw += f"_lifetime-{minutes}"
+            self._install(pw)
+            return f"{self._key}-{self._id} (gen {self.generation})"
+
     @staticmethod
     def valid_session_id(sid: str) -> bool:
         return bool(re.fullmatch(r"[A-Za-z0-9]{6,10}", sid))
+
+
+def parse_lifetime_input(text: str) -> int | None:
+    """Parse a lifetime prompt reply: '' cancels, else 1-1440 minutes."""
+    text = text.strip()
+    if text == "":
+        return None
+    try:
+        n = int(text)
+    except ValueError:
+        raise ValueError(f"not a number: {text!r}")
+    if not 1 <= n <= 1440:
+        raise ValueError("lifetime must be 1-1440 minutes")
+    return n
 
 
 def prompt_credentials(cfg: Config, env: dict) -> tuple[str, str]:
@@ -175,14 +238,15 @@ def prompt_credentials(cfg: Config, env: dict) -> tuple[str, str]:
     return first, password
 
 
-def read_keys(stop: threading.Event, out: queue.Queue[str]) -> None:
+def read_keys(stop: threading.Event, out: queue.Queue[str],
+                cmds: "queue.Queue[tuple]" | None = None) -> None:
     """Single-keypress reader for ordinary terminals, no root needed.
 
     Windows: msvcrt (no Enter). Linux/macOS: termios raw mode on a TTY.
     Anything else: line input fallback.
     """
     if _os.name == "nt":
-        _read_keys_windows(stop, out)
+        _read_keys_windows(stop, out, cmds)
         return
     try:
         import termios
@@ -190,6 +254,8 @@ def read_keys(stop: threading.Event, out: queue.Queue[str]) -> None:
         import select
     except ImportError:
         while not stop.is_set():
+            if cmds is not None:
+                _drain_prompts(cmds)
             try:
                 line = input()
             except EOFError:
@@ -201,6 +267,8 @@ def read_keys(stop: threading.Event, out: queue.Queue[str]) -> None:
 
     if not sys.stdin.isatty():
         while not stop.is_set():
+            if cmds is not None:
+                _drain_prompts(cmds)
             try:
                 line = input()
             except EOFError:
@@ -215,6 +283,8 @@ def read_keys(stop: threading.Event, out: queue.Queue[str]) -> None:
     try:
         tty.setcbreak(fd)
         while not stop.is_set():
+            if cmds is not None:
+                _drain_prompts(cmds, fd, old)
             r, _, _ = select.select([sys.stdin], [], [], 0.2)
             if not r:
                 continue
@@ -231,11 +301,44 @@ def read_keys(stop: threading.Event, out: queue.Queue[str]) -> None:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def _read_keys_windows(stop: threading.Event, out: queue.Queue[str]) -> None:
+def _do_prompt(text: str, reply: "queue.Queue[str]",
+               raw_fd: int | None = None, raw_old=None) -> None:
+    """Blocking prompt executed in the reader thread (owns the terminal)."""
+    try:
+        if raw_fd is not None:
+            import termios
+            import tty
+            termios.tcsetattr(raw_fd, termios.TCSADRAIN, raw_old)
+            try:
+                line = input(text)
+            finally:
+                tty.setcbreak(raw_fd)
+        else:
+            line = input(text)
+    except EOFError:
+        line = ""
+    reply.put(line)
+
+
+def _drain_prompts(cmds: "queue.Queue[tuple]", raw_fd: int | None = None,
+                   raw_old=None) -> None:
+    while True:
+        try:
+            kind, text, reply = cmds.get_nowait()
+        except queue.Empty:
+            return
+        if kind == "prompt":
+            _do_prompt(text, reply, raw_fd, raw_old)
+
+
+def _read_keys_windows(stop: threading.Event, out: queue.Queue[str],
+                       cmds: "queue.Queue[tuple]" | None = None) -> None:
     """Single-keypress reader for Windows consoles (msvcrt, no Enter needed)."""
     import msvcrt
 
     while not stop.is_set():
+        if cmds is not None:
+            _drain_prompts(cmds)
         try:
             if not msvcrt.kbhit():
                 time.sleep(0.05)
@@ -418,7 +521,66 @@ async def verify_rotation(cfg: Config, session: SessionState, state: dict,
             print(_info(paint(f"(no desktop popup: {hint})", C.DIM)))
 
 
+def _enable_windows_ansi() -> bool:
+    """Enable ANSI escape processing on Windows 10+ consoles.
+
+    Returns True when escape codes will render (non-Windows: True, nothing
+    to do; the _COLOR gate still requires a TTY and no NO_COLOR).
+    """
+    if _os.name != "nt":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if not kernel32.SetConsoleMode(handle, mode.value | 0x0004):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+async def _wait_reply(reply: "queue.Queue[str]") -> str:
+    while True:
+        try:
+            return reply.get_nowait()
+        except queue.Empty:
+            await asyncio.sleep(0.05)
+
+
+async def cmd_lifetime(cfg: Config, session: SessionState, server: ProxyServer,
+                       state: dict, cmds: "queue.Queue[tuple]") -> None:
+    reply: queue.Queue[str] = queue.Queue()
+    cmds.put(("prompt", "lifetime minutes 1-1440 (0 clears flag, empty cancels): ", reply))
+    line = (await _wait_reply(reply)).strip()
+    if line == "":
+        print(_info("lifetime unchanged."))
+        return
+    try:
+        if line == "0":
+            label = session.set_lifetime(None)
+            note = "lifetime flag cleared (Evomi default applies)"
+        else:
+            label = session.set_lifetime(parse_lifetime_input(line))
+            note = f"lifetime set to {line} min"
+    except ValueError as exc:
+        print(_err(f"not changed: {exc}"))
+        return
+    closed = server.retire_idle_upstreams()
+    print(_ok(f"{note}: {paint(label, C.BOLD, C.MAGENTA)} "
+              f"{paint(f'(retired {closed} idle upstream socket(s))', C.DIM)}"))
+    print(paint("    verifying new exit IP ...", C.DIM))
+    asyncio.ensure_future(verify_rotation(cfg, session, state, state.get("last_ip")))
+
+
 async def async_main() -> int:
+    global _COLOR, HELP
+    if not _enable_windows_ansi():
+        _COLOR = False  # plain output on consoles without VT processing
+        HELP = help_text()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg_env = parse_args_with_env()
     cfg, env, env_path = cfg_env[0], cfg_env[1], cfg_env[2]
@@ -428,6 +590,14 @@ async def async_main() -> int:
     cfg.username = username
     session = SessionState(password)
     del password  # keep only inside session object
+    if cfg.session_type:
+        print(_info(f"session type override: {paint(session.set_session_type(cfg.session_type), C.BOLD)}"))
+    if cfg.lifetime is not None:
+        try:
+            session.set_lifetime(cfg.lifetime)
+            print(_info(f"lifetime override: {paint(f'{cfg.lifetime} min', C.BOLD)}"))
+        except ValueError as exc:
+            print(_warn(f"ignoring --lifetime: {exc}"))
     state: dict = {"last_ip": None, "last_geo": None}
 
     server = ProxyServer(cfg, session)
@@ -449,7 +619,8 @@ async def async_main() -> int:
 
     stop = threading.Event()
     keys: queue.Queue[str] = queue.Queue()
-    thread = threading.Thread(target=read_keys, args=(stop, keys), daemon=True)
+    cmds: queue.Queue[tuple] = queue.Queue()
+    thread = threading.Thread(target=read_keys, args=(stop, keys, cmds), daemon=True)
     thread.start()
 
     try:
@@ -470,6 +641,23 @@ async def async_main() -> int:
                     await cmd_ip(cfg, session, state)
                 elif key == "s":
                     cmd_status(server, session, state)
+                elif key == "t":
+                    order = SessionState.SESSION_TYPES
+                    nxt = order[(order.index(session.session_type()) + 1) % len(order)]
+                    try:
+                        label = session.set_session_type(nxt)
+                    except ValueError as exc:
+                        print(_err(f"not changed: {exc}"))
+                        continue
+                    closed = server.retire_idle_upstreams()
+                    extra = (" (lifetime flag dropped: not applicable to hard/locked)"
+                             if nxt != "session" else "")
+                    print(_ok(f"session type -> {paint(label, C.BOLD, C.MAGENTA)}"
+                              f"{paint(extra, C.DIM)}"))
+                    print(paint("    verifying new exit IP ...", C.DIM))
+                    asyncio.ensure_future(verify_rotation(cfg, session, state, state.get("last_ip")))
+                elif key == "l":
+                    await cmd_lifetime(cfg, session, server, state, cmds)
                 elif key == "q":
                     print(_info("shutting down ..."))
                     return 0

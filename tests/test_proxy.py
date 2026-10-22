@@ -787,5 +787,112 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         import main as _main
         self.assertIsInstance(await _main.desktop_notify("t", "b"), bool)
 
+    def test_set_session_type_cycle(self):
+        import main as _main
+        s = _main.SessionState("BASE_country-GB_session-Ab12Cd34_lifetime-15")
+        self.assertEqual(s.session_type(), "session")
+        label = s.set_session_type("hardsession")
+        self.assertEqual(s.session_type(), "hardsession")
+        pw = s.current_password()
+        self.assertIn("_hardsession-", pw)
+        self.assertNotIn("Ab12Cd34", pw)  # fresh id
+        self.assertIn("_country-GB_", pw)  # other flags kept
+        self.assertNotIn("lifetime", pw)  # dropped: n/a for hard sessions
+        self.assertIsNone(s.lifetime_minutes())
+        label2 = s.set_session_type("session")
+        self.assertIn("_session-", s.current_password())
+        self.assertEqual(s.lifetime_minutes(), 30)  # default restored
+        with self.assertRaises(ValueError):
+            s.set_session_type("bogus")
+        self.assertIn("gen", label)
+        self.assertIn("gen", label2)
+
+    def test_set_lifetime(self):
+        import main as _main
+        s = _main.SessionState("BASE_country-DE")
+        self.assertTrue(s.current_password().startswith("BASE_country-DE_session-"))
+        s.set_lifetime(60)
+        self.assertIn("_lifetime-60", s.current_password())
+        self.assertEqual(s.lifetime_minutes(), 60)
+        s.set_lifetime(15)
+        pw = s.current_password()
+        self.assertIn("_lifetime-15", pw)
+        self.assertNotIn("lifetime-60", pw)
+        self.assertEqual(pw.count("_lifetime-"), 1)
+        s.set_lifetime(None)
+        self.assertNotIn("lifetime", s.current_password())
+        with self.assertRaises(ValueError):
+            s.set_lifetime(0)
+        with self.assertRaises(ValueError):
+            s.set_lifetime(1441)
+        with self.assertRaises(ValueError):
+            s.set_lifetime("60")  # type: ignore[arg-type]
+
+    def test_set_lifetime_rejected_for_hard_type(self):
+        import main as _main
+        s = _main.SessionState("BASE_hardsession-JS9nsq2n")
+        with self.assertRaises(ValueError):
+            s.set_lifetime(30)
+
+    def test_parse_lifetime_input(self):
+        import main as _main
+        self.assertIsNone(_main.parse_lifetime_input(""))
+        self.assertIsNone(_main.parse_lifetime_input("   "))
+        self.assertEqual(_main.parse_lifetime_input("60"), 60)
+        self.assertEqual(_main.parse_lifetime_input(" 15 "), 15)
+        with self.assertRaises(ValueError):
+            _main.parse_lifetime_input("0")
+        with self.assertRaises(ValueError):
+            _main.parse_lifetime_input("2000")
+        with self.assertRaises(ValueError):
+            _main.parse_lifetime_input("abc")
+
+    def test_do_prompt_replies(self):
+        import main as _main
+        import queue as _queue
+        from unittest import mock
+        reply: _queue.Queue[str] = _queue.Queue()
+        with mock.patch("builtins.input", return_value="60"):
+            _main._do_prompt("mins: ", reply)
+        self.assertEqual(reply.get_nowait(), "60")
+        reply2: _queue.Queue[str] = _queue.Queue()
+        with mock.patch("builtins.input", side_effect=EOFError):
+            _main._do_prompt("mins: ", reply2)
+        self.assertEqual(reply2.get_nowait(), "")
+
+    def test_session_type_and_lifetime_config(self):
+        from config import parse_args
+        import os as _os
+        cfg = parse_args(["--username", "u", "--env-file", _os.devnull,
+                          "--session-type", "hardsession", "--lifetime", "60"])
+        self.assertEqual(cfg.session_type, "hardsession")
+        self.assertEqual(cfg.lifetime, 60)
+        cfg = parse_args(["--username", "u", "--env-file", _os.devnull])
+        self.assertIsNone(cfg.session_type)
+        self.assertIsNone(cfg.lifetime)
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".env", delete=False) as fh:
+            fh.write("EVOMI_USERNAME=u\nEVOMI_SESSION_TYPE=lockedsession\nEVOMI_LIFETIME=120\n")
+            path = fh.name
+        try:
+            cfg = parse_args(["--env-file", path])
+            self.assertEqual(cfg.session_type, "lockedsession")
+            self.assertEqual(cfg.lifetime, 120)
+            with open(path, "w") as fh2:
+                fh2.write("EVOMI_USERNAME=u\nEVOMI_SESSION_TYPE=bogus\n")
+            with self.assertRaises(ValueError):
+                parse_args(["--env-file", path])
+            with open(path, "w") as fh3:
+                fh3.write("EVOMI_USERNAME=u\nEVOMI_LIFETIME=banana\n")
+            with self.assertRaises(ValueError):
+                parse_args(["--env-file", path])
+        finally:
+            import os
+            os.unlink(path)
+
+    def test_enable_windows_ansi_no_raise(self):
+        import main as _main
+        self.assertIsInstance(_main._enable_windows_ansi(), bool)
+
 if __name__ == "__main__":
     unittest.main()

@@ -189,6 +189,11 @@ def parse_args_with_env(argv: list[str] | None = None) -> tuple[Config, dict[str
     p.add_argument("--upstream-port", type=int, default=None)
     p.add_argument("--upstream-tls", action="store_true",
                    help="TLS to upstream (for https endpoints like *.evomi-proxy.com:1001)")
+    p.add_argument("--session-type", default=None,
+                   choices=["session", "hardsession", "lockedsession"],
+                   help="override session type (default: from password, else session)")
+    p.add_argument("--lifetime", type=int, default=None, metavar="MINUTES",
+                   help="override sticky lifetime 1-1440 min (session type only)")
     p.add_argument("--username", default=None, help="Evomi username (else .env, else prompted)")
     p.add_argument("--connect-timeout", type=float, default=None)
     p.add_argument("--max-connections", type=int, default=None)
@@ -222,7 +227,7 @@ def parse_args_with_env(argv: list[str] | None = None) -> tuple[Config, dict[str
         defaults = {"local_port": DEFAULT_LOCAL_PORT, "upstream_host": DEFAULT_UPSTREAM_HOST,
                     "upstream_port": DEFAULT_UPSTREAM_PORT, "username": "",
                     "connect_timeout": DEFAULT_TIMEOUT, "max_connections": DEFAULT_MAX_CONNECTIONS,
-                    "local_user": "", "local_pass": ""}
+                    "local_user": "", "local_pass": "", "lifetime": None}
         return defaults[field]
 
     if a.no_notify:
@@ -251,6 +256,9 @@ def parse_args_with_env(argv: list[str] | None = None) -> tuple[Config, dict[str
         local_pass=(a.local_pass if a.local_pass is not None
                     else env.get("EVOMI_LOCAL_PASS", "")),
         notify=notify,
+        session_type=(a.session_type if a.session_type is not None
+                      else (env.get("EVOMI_SESSION_TYPE", "").strip().lower() or None)),
+        lifetime=pick("lifetime", a.lifetime, int),
     )
     cfg.validate()
     return cfg, env, a.env_file
