@@ -685,5 +685,63 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         finally:
             _main._COLOR = old
 
+    async def test_serves_proxy_pac_locally(self):
+        from proxy_server import pac_body, pac_request_path
+        up = FakeUpstream()
+        _, uport = await up.start()
+        try:
+            bridge, port = await start_bridge(make_cfg(uport), SessionState("pw"))
+            try:
+                # origin-form request (direct)
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                w.write(b"GET /proxy.pac HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                await w.drain()
+                head, body = await read_http_response(r)
+                self.assertIn("200", head.split("\r\n")[0])
+                self.assertIn("application/x-ns-proxy-autoconfig", head)
+                self.assertIn(f"PROXY 127.0.0.1:{port}".encode(), body)
+                self.assertEqual(body, pac_body(port))
+                w.close()
+                # absolute-form through the bridge (PAC bootstrap fetch)
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                w.write(f"GET http://127.0.0.1:{port}/proxy.pac HTTP/1.1\r\n"
+                        f"Host: 127.0.0.1:{port}\r\n\r\n".encode())
+                await w.drain()
+                head, body = await read_http_response(r)
+                self.assertIn("200", head.split("\r\n")[0])
+                self.assertIn(f"PROXY 127.0.0.1:{port}".encode(), body)
+                w.close()
+                # wpad.dat alias
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                w.write(b"GET /wpad.dat HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                await w.drain()
+                head, _ = await read_http_response(r)
+                self.assertIn("200", head.split("\r\n")[0])
+                w.close()
+                # POST to a local path is refused, not forwarded
+                r, w = await asyncio.open_connection("127.0.0.1", port)
+                w.write(b"POST /proxy.pac HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                        b"Content-Length: 0\r\n\r\n")
+                await w.drain()
+                head, _ = await read_http_response(r)
+                self.assertIn("405", head.split("\r\n")[0])
+                w.close()
+                # upstream never touched
+                self.assertEqual(up.seen_tokens, [])
+            finally:
+                await bridge.stop()
+        finally:
+            await up.stop()
+
+    def test_pac_request_path_routing(self):
+        from proxy_server import pac_request_path
+        self.assertEqual(pac_request_path("GET", "/proxy.pac", []), "/proxy.pac")
+        self.assertEqual(pac_request_path("GET", "/wpad.dat?x=1", []), "/wpad.dat")
+        self.assertEqual(pac_request_path("GET", "http://127.0.0.1:8899/proxy.pac", []),
+                         "/proxy.pac")
+        self.assertIsNone(pac_request_path("GET", "http://example.com/proxy.pac", []))
+        self.assertIsNone(pac_request_path("GET", "/index.html", []))
+        self.assertIsNone(pac_request_path("CONNECT", "example.com:443", []))
+
 if __name__ == "__main__":
     unittest.main()

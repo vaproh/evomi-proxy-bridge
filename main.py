@@ -294,13 +294,14 @@ async def cmd_ip(cfg: Config, session: SessionState, state: dict) -> None:
 def cmd_status(server: ProxyServer, session: SessionState, state: dict) -> None:
     up = time.time() - server.started_at if server.started_at else 0
     alive = paint("yes", C.GREEN, C.BOLD) if server.listening else paint("no", C.RED, C.BOLD)
-    print(_info(f"listening: {alive} {paint(f'(127.0.0.1:{server.config.local_port})', C.DIM)}"))
+    print(_info(f"listening: {alive} {paint(f'(127.0.0.1:{server.bound_port()})', C.DIM)}"))
     scheme = "https" if server.config.upstream_tls else "http"
     print(_info(f"upstream: {paint(f'{scheme}://{server.config.upstream_host}:{server.config.upstream_port}', C.BOLD)}"))
     print(_info(f"session: {paint(session.label(), C.BOLD, C.MAGENTA)}"))
     print(_info(_kv("flags:", format_flags(session))))
     life = format_lifetime(session).removeprefix("lifetime: ")
     print(_info(_kv("lifetime:", paint(life, C.YELLOW))))
+    print(_info(f"auto-config URL: {paint(f'http://127.0.0.1:{server.bound_port()}/proxy.pac', C.BOLD)}"))
     if state.get("last_ip"):
         print(_info(f"last exit IP: {paint(state['last_ip'], C.BOLD, C.GREEN)}"))
     print(_info(f"uptime: {up:.0f}s  plain-requests: {server.request_count}  tunnels: {server.connect_count}"))
@@ -361,9 +362,10 @@ async def async_main() -> int:
     rule = paint("\u2501" * 46, C.DIM)
     print(paint("\n  p r o x y - b r i d g e", C.BOLD, C.CYAN))
     print(rule)
-    print(_kv("  listen  ", f"127.0.0.1:{cfg.local_port}"))
+    print(_kv("  listen  ", f"127.0.0.1:{server.bound_port()}"))
     print(_kv("  upstream", f"{scheme}://{cfg.upstream_host}:{cfg.upstream_port}"))
     print(_kv("  session ", session.label()))
+    print(_kv("  auto-cfg", f"http://127.0.0.1:{server.bound_port()}/proxy.pac"))
     print(rule)
     if cfg.upstream_tls and not cfg.upstream_host.endswith("evomi-proxy.com"):
         print(_warn("upstream TLS hostname is outside *.evomi-proxy.com;"))

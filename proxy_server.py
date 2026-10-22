@@ -30,6 +30,34 @@ _HOP_HEADERS = {
     "connection", "keep-alive", "transfer-encoding", "upgrade",
 }
 
+PAC_PATHS = ("/proxy.pac", "/wpad.dat")
+
+
+def pac_body(port: int) -> bytes:
+    return (f"function FindProxyForURL(url, host) {{\n"
+            f'  return "PROXY 127.0.0.1:{port}";\n'
+            f"}}\n").encode()
+
+
+def pac_request_path(method: str, target: str, headers) -> str | None:
+    """Local PAC path for this request, or None to forward upstream.
+
+    Matches origin-form (/proxy.pac) and absolute-form through the bridge
+    (http://127.0.0.1:port/proxy.pac, the usual PAC bootstrap fetch).
+    """
+    path: str | None = None
+    if target.startswith("/"):
+        path = target.split("?", 1)[0]
+    elif target.startswith("http://"):
+        rest = target[len("http://"):]
+        hostport, _, pathpart = rest.partition("/")
+        host = hostport.split(":")[0]
+        if host == "127.0.0.1":
+            path = ("/" + pathpart).split("?", 1)[0]
+    if path in PAC_PATHS:
+        return path
+    return None
+
 
 def redact(text: str) -> str:
     """Redact credential-bearing material before logging."""
@@ -111,6 +139,13 @@ class ProxyServer:
     @property
     def listening(self) -> bool:
         return self.server is not None and self.server.is_serving()
+
+    def bound_port(self) -> int:
+        """Actual local port (falls back to configured when unbound)."""
+        try:
+            return self.server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+        except (AttributeError, IndexError, OSError, TypeError):
+            return self.config.local_port
 
     def _track(self, writer: asyncio.StreamWriter) -> None:
         self._upstreams.add(writer)
@@ -219,6 +254,15 @@ class ProxyServer:
         raw = await read_head(reader)
         method, target, headers = parse_head(raw)
         extra = raw.split(b"\r\n\r\n", 1)[1]
+
+        # Local PAC file: served directly, never forwarded upstream.
+        # (Browsers fetch it through the bridge itself during bootstrap.)
+        if pac_request_path(method, target, headers) is not None:
+            if method != "GET":
+                await self._send_error(writer, "405", "Method Not Allowed")
+            else:
+                await self._serve_pac(writer)
+            return
 
         if self.config.local_user and not self._check_local_auth(headers):
             writer.write(b"HTTP/1.1 407 Proxy Authentication Required\r\n"
@@ -358,6 +402,13 @@ class ProxyServer:
                 raise ValueError("origin-form request without Host")
             return f"http://{host}{target}"
         raise ValueError(f"unsupported request target: {target[:60]!r}")
+
+    async def _serve_pac(self, writer) -> None:
+        body = pac_body(self.bound_port())
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ns-proxy-autoconfig\r\n"
+                     b"Cache-Control: no-store\r\nContent-Length: %d\r\n"
+                     b"Connection: close\r\n\r\n" % len(body) + body)
+        await writer.drain()
 
     @staticmethod
     async def _send_error(writer, code: str, message: str) -> None:

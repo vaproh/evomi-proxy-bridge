@@ -110,6 +110,13 @@ slightly (Settings → search "proxy" if lost).
    hostnames at the proxy; see leak test below). Do not change the user
    agent or fingerprinting settings.
 
+   **Alternative: auto-config URL (no manual host/port).** In the same
+   Network Settings dialog choose **Automatic proxy configuration URL** and
+   enter `http://127.0.0.1:8899/proxy.pac`. The bridge serves this PAC file
+   itself (nothing to host anywhere); it routes all browser traffic through
+   the bridge. The URL is printed in the startup banner and in `s` status. If
+   you run the bridge on a different `--local-port`, adjust the URL port.
+
 Test it: press `i` in the bridge terminal (independent check through the same
 upstream, plus geo) or visit `https://ip.evomi.com/s` in the browser. Then compare against a
 leak test such as `https://www.dnsleaktest.com`: with the proxy active, the
