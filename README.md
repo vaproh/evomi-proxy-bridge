@@ -199,7 +199,10 @@ data, and it does not reset browser identity. Two options:
   cannot route to it right now, or Evomi refuses that host/port. Press `r` to
   rotate to a new exit IP and retry the page; if a host fails on every session,
   it is an Evomi-side restriction, not a bridge bug. The refusal log names the
-  target `host:port` so you can tell which sites are affected.
+  target `host:port` so you can tell which sites are affected. Repeat refusals
+  for the same target log once per 10 minutes (repeats go to debug) so
+  connectivity-probe hosts (e.g. `ds6.probe.whatismyipaddress.com`, which some
+  IP-check sites poll) don't spam the log; the browser still gets the 502.
 - **Port 8899 in use**: stop the other program or pass `--local-port 8900`
   and update the browser port to match.
 - **Nothing loads, bridge shows no requests**: browser is not using the

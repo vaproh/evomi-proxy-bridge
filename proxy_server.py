@@ -121,6 +121,27 @@ class UpstreamAuthError(Exception):
 class UpstreamError(ConnectionError):
     """Upstream dial/refusal failed (mapped to 502; distinct from client aborts)."""
 
+    def __init__(self, message: str, target: str | None = None) -> None:
+        super().__init__(message)
+        self.target = target
+
+
+# Repeat upstream refusals for the same target (connectivity probes etc.)
+# warn at most once per window; repeats drop to debug so the log stays readable.
+_refusal_last: dict[str, float] = {}
+REFUSAL_QUIET_S = 600.0
+
+
+def log_upstream_error(exc: UpstreamError) -> None:
+    key = exc.target or ""
+    now = time.monotonic()
+    if key and now - _refusal_last.get(key, 0.0) < REFUSAL_QUIET_S:
+        log.debug("upstream error (repeat, quieted): %s", redact(str(exc)))
+        return
+    if key:
+        _refusal_last[key] = now
+    log.warning("upstream error: %s", redact(str(exc)))
+
 
 class ProxyServer:
     """Asyncio HTTP proxy bound to loopback, chaining to authenticated upstream."""
@@ -232,7 +253,7 @@ class ProxyServer:
             except asyncio.TimeoutError:
                 await self._send_error(writer, "504", "Gateway Timeout")
             except UpstreamError as exc:
-                log.warning("upstream error: %s", redact(str(exc)))
+                log_upstream_error(exc)
                 await self._send_error(writer, "502", "Bad Gateway: upstream unreachable")
             except UpstreamAuthError:
                 await self._send_error(
@@ -296,7 +317,7 @@ class ProxyServer:
         except UpstreamError:
             raise
         except (OSError, asyncio.TimeoutError) as exc:
-            raise UpstreamError(f"upstream unreachable for {target}: {exc}") from exc
+            raise UpstreamError(f"upstream unreachable for {target}: {exc}", target) from exc
         try:
             up_w.write(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n"
                        f"Proxy-Authorization: Basic {token}\r\n"
@@ -308,7 +329,8 @@ class ProxyServer:
                 raise UpstreamAuthError("upstream rejected credentials")
             if code != "200":
                 raise UpstreamError(
-                    f"upstream CONNECT refused for {target}: {redact(_status_line(resp))}")
+                    f"upstream CONNECT refused for {target}: {redact(_status_line(resp))}",
+                    target)
             c_w.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await c_w.drain()
             self.connect_count += 1
@@ -367,7 +389,7 @@ class ProxyServer:
         except UpstreamError:
             raise
         except (OSError, asyncio.TimeoutError) as exc:
-            raise UpstreamError(f"upstream unreachable: {exc}") from exc
+            raise UpstreamError(f"upstream unreachable for {url}: {exc}", url) from exc
         try:
             out = [f"{method} {url} HTTP/1.1"]
             for k, v in headers:

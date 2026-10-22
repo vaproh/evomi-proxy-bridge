@@ -894,5 +894,31 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         import main as _main
         self.assertIsInstance(_main._enable_windows_ansi(), bool)
 
+    def test_refusal_warnings_quieted_per_target(self):
+        import logging
+        import proxy_server as _ps
+
+        _ps._refusal_last.clear()
+        exc = _ps.UpstreamError("upstream CONNECT refused for probe.example:443: 502", "probe.example:443")
+        with self.assertLogs("proxy_bridge", level="WARNING") as cm:
+            _ps.log_upstream_error(exc)
+        self.assertTrue(any("probe.example" in m for m in cm.output))
+        # repeat within window: no WARNING (debug only)
+        with self.assertLogs("proxy_bridge", level="DEBUG") as cm:
+            _ps.log_upstream_error(exc)
+        self.assertFalse(any(r.levelno >= logging.WARNING for r in cm.records))
+        # other targets still warn
+        with self.assertLogs("proxy_bridge", level="WARNING"):
+            _ps.log_upstream_error(_ps.UpstreamError("refused for other.example:443", "other.example:443"))
+        # after the window, warns again
+        _ps._refusal_last["probe.example:443"] -= _ps.REFUSAL_QUIET_S + 1
+        with self.assertLogs("proxy_bridge", level="WARNING"):
+            _ps.log_upstream_error(exc)
+        # failures without a target always warn
+        with self.assertLogs("proxy_bridge", level="WARNING"):
+            _ps.log_upstream_error(_ps.UpstreamError("TLS hostname check failed"))
+            _ps.log_upstream_error(_ps.UpstreamError("TLS hostname check failed"))
+        _ps._refusal_last.clear()
+
 if __name__ == "__main__":
     unittest.main()
