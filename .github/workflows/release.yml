@@ -56,6 +56,48 @@ jobs:
           releaseDraft: true
           prerelease: false
 
+      - name: Stage zip contents (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          mkdir -p release-pkg
+          cp .env.example release-pkg/
+          cp target/release/bundle/appimage/*.AppImage release-pkg/
+          cp target/release/bundle/deb/*.deb release-pkg/
+
+      - name: Stage zip contents (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          mkdir release-pkg
+          cp .env.example release-pkg/
+          cp target/release/bundle/nsis/*-setup.exe release-pkg/
+
+      - name: Zip release package (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: thedoctor0/zip-release@main
+        with:
+          type: zip
+          directory: release-pkg/
+          filename: evomi-bridge-${{ github.ref_name }}-linux.zip
+
+      - name: Zip release package (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: thedoctor0/zip-release@main
+        with:
+          type: zip
+          directory: release-pkg/
+          filename: evomi-bridge-${{ github.ref_name }}-windows.zip
+
+      - name: Upload zip to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "ubuntu-22.04" ]; then
+            gh release upload "${{ github.ref_name }}" "evomi-bridge-${{ github.ref_name }}-linux.zip" --clobber
+          else
+            gh release upload "${{ github.ref_name }}" "evomi-bridge-${{ github.ref_name }}-windows.zip" --clobber
+          fi
+
       - name: Publish with generated notes (Linux only)
         if: matrix.platform == 'ubuntu-22.04'
         env:

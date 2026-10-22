@@ -47,7 +47,8 @@ header { display: flex; align-items: center; justify-content: space-between; mar
 .badge.hidden { display: none; }
 
 main { flex: 1; overflow: hidden; position: relative; }
-.pane { display: none; height: 100%; overflow-y: auto; animation: pane-in 0.25s ease; }
+.pane { display: none; height: 100%; overflow-y: auto; animation: pane-in 0.25s ease; scrollbar-width: none; }
+.pane::-webkit-scrollbar { display: none; }
 .pane.active { display: block; }
 @keyframes pane-in { from { opacity: 0; transform: translateY(6px); } }
 
@@ -111,10 +112,13 @@ input[type="number"], input[type="text"], input[type="password"], select {
 input:focus, select:focus { border-color: var(--green); }
 select option { background: var(--bg2); }
 
-.mini .kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 12.5px; border-top: 1px solid rgba(255,255,255,0.05); }
+.mini { background: linear-gradient(180deg, rgba(240,180,90,0.06), transparent), var(--card); border-left: 3px solid var(--amber); }
+.mini .kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; font-size: 12.5px; border-top: 1px solid rgba(240,180,90,0.12); }
 .mini .kv:first-child { border-top: none; }
-.mini .kv > span:first-child { color: var(--dim); white-space: nowrap; }
-.mini .kv .mono { color: var(--text); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 62%; }
+.mini .kv > span:first-child { color: #c8d8ce; white-space: nowrap; text-transform: uppercase; font-size: 11px; letter-spacing: 1px; padding-top: 2px; }
+.mini .kv .mono { color: var(--amber); text-align: right; word-break: break-all; max-width: 68%; user-select: text; }
+.mini .kv .copyable { cursor: pointer; border-bottom: 1px dashed rgba(240,180,90,0.4); }
+.mini .kv .copyable:hover { color: #ffd479; border-bottom-style: solid; }
 .check-note { font-size: 12px; color: var(--amber); min-height: 16px; margin: 2px 0 8px; }
 .check-note.bad { color: var(--red); }
 .pac-line { display: flex; gap: 8px; align-items: center; }
@@ -147,5 +151,5 @@ select option { background: var(--bg2); }
   animation: pane-in 0.25s ease;
 }
 .toast.hidden { display: none; }
-::-webkit-scrollbar { width: 8px; }
-::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+::-webkit-scrollbar { display: none; }
+* { scrollbar-width: none; }

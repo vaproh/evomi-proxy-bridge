@@ -24,6 +24,14 @@ function toast(msg, ms = 4500) {
   t._h = setTimeout(() => t.classList.add("hidden"), ms);
 }
 
+async function copyPac() {
+  try {
+    await navigator.clipboard.writeText($("pac-url").textContent);
+    toast("PAC url copied - paste it as the browser's automatic-config URL");
+  } catch {
+    toast("copy failed - select the URL manually");
+  }
+}
 async function call(cmd, args, what) {
   try {
     return await invoke(cmd, args);
@@ -210,13 +218,18 @@ function bindActions() {
     $("lifetime-input").value = "";
     setTimeout(pollStatus, 300);
   });
-  $("btn-pac").addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText($("pac-url").textContent);
-      toast("PAC url copied - paste it as the browser's automatic-config URL");
-    } catch {
-      toast("copy failed - select the URL manually");
-    }
+  $("btn-pac").addEventListener("click", copyPac);
+  document.querySelectorAll(".copyable").forEach((el) => {
+    el.addEventListener("click", async () => {
+      const text = el.textContent;
+      if (!text || text === "—") return;
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("copied to clipboard");
+      } catch {
+        toast("copy failed - select the text manually");
+      }
+    });
   });
   $("btn-clear-logs").addEventListener("click", () => {
     $("log-list").innerHTML = "";
