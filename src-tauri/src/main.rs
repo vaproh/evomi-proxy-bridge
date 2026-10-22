@@ -244,9 +244,15 @@ fn spawn_verify(app: tauri::AppHandle, old_ip: Option<String>) {
         let state: tauri::State<AppState> = app.state();
         let (username, password, host, port, tls, cafile) = {
             let core = state.core.lock().unwrap();
+            // Live session password (with current session id), NOT the template:
+            // the template keeps the original id and would pin checks to the old exit IP.
+            let password = match core.session.as_ref() {
+                Some(s) => s.current_password(),
+                None => core.password.clone(),
+            };
             (
                 core.config.username.clone(),
-                core.password.clone(),
+                password,
                 core.config.upstream_host.clone(),
                 core.config.upstream_port,
                 core.config.upstream_tls,
@@ -276,11 +282,15 @@ fn spawn_verify(app: tauri::AppHandle, old_ip: Option<String>) {
                 (Some(ip), g)
             }
             Ok(Err(e)) => {
-                log::warn!("IP check failed: {e}");
+                let msg = format!("check failed: {e}");
+                log::warn!("IP {msg}");
+                state.core.lock().unwrap().last_check_note = msg;
                 (None, String::new())
             }
             Err(e) => {
-                log::warn!("IP check task failed: {e}");
+                let msg = format!("check task failed: {e}");
+                log::warn!("IP {msg}");
+                state.core.lock().unwrap().last_check_note = msg;
                 (None, String::new())
             }
         };

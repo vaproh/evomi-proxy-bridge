@@ -56,6 +56,15 @@ function renderStatus(s) {
     state.lastIp = ip;
   }
   $("geo").textContent = s.last_geo || (running ? "press check to verify" : "bridge stopped");
+  let note = $("check-note");
+  if (!note) {
+    note = document.createElement("div");
+    note.id = "check-note";
+    note.className = "check-note";
+    $("geo").after(note);
+  }
+  note.textContent = s.last_check_note || "";
+  note.classList.toggle("bad", /fail/i.test(s.last_check_note || ""));
 
   $("session-label").textContent = s.session_label || "—";
   document.querySelectorAll("#type-row .chip").forEach((c) => {
@@ -190,7 +199,7 @@ function bindActions() {
   });
   document.querySelectorAll("#type-row .chip").forEach((c) => {
     c.addEventListener("click", async () => {
-      await call("set_session_type", { sessionType: c.dataset.type }, "Session type").catch(() => {});
+      await call("set_session_type", { session_type: c.dataset.type }, "Session type").catch(() => {});
       setTimeout(pollStatus, 300);
     });
   });
@@ -217,13 +226,13 @@ function bindActions() {
     const payload = {
       username: $("set-username").value,
       password: $("set-password").value,
-      upstreamHost: $("set-host").value,
-      upstreamPort: parseInt($("set-port").value, 10),
-      upstreamTls: $("set-tls").checked,
-      localPort: parseInt($("set-local-port").value, 10),
-      localUser: $("set-local-user").value,
-      localPass: $("set-local-pass").value,
-      sessionType: $("set-type").value,
+      upstream_host: $("set-host").value,
+      upstream_port: parseInt($("set-port").value, 10),
+      upstream_tls: $("set-tls").checked,
+      local_port: parseInt($("set-local-port").value, 10),
+      local_user: $("set-local-user").value,
+      local_pass: $("set-local-pass").value,
+      session_type: $("set-type").value,
       lifetime: lt,
       notify: $("set-notify").checked,
     };
