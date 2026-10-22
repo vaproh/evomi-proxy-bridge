@@ -609,6 +609,9 @@ async def async_main() -> int:
     print(_kv("  listen  ", f"127.0.0.1:{server.bound_port()}"))
     print(_kv("  upstream", f"{scheme}://{cfg.upstream_host}:{cfg.upstream_port}"))
     print(_kv("  session ", session.label()))
+    print(_kv("  type    ", session.session_type()))
+    print(_kv("  flags   ", format_flags(session)))
+    print(_kv("  lifetime", format_lifetime(session).removeprefix("lifetime: ")))
     print(_kv("  auto-cfg", f"http://127.0.0.1:{server.bound_port()}/proxy.pac"))
     print(rule)
     if cfg.upstream_tls and not cfg.upstream_host.endswith("evomi-proxy.com"):
