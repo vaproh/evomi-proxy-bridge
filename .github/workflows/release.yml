@@ -70,12 +70,18 @@ jobs:
           cp .env.example release-pkg/
           cp target/release/bundle/nsis/*-setup.exe release-pkg/
 
-      - name: Zip release package
-        uses: thedoctor0/zip-release@main
-        with:
-          type: zip
-          directory: release-pkg/
-          filename: evomi-bridge-${{ github.ref_name }}-${{ matrix.zip }}.zip
+      - name: Zip release package (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          cd release-pkg && zip -r "../evomi-bridge-${{ github.ref_name }}-${{ matrix.zip }}.zip" . && cd ..
+          ls -la "evomi-bridge-${{ github.ref_name }}-${{ matrix.zip }}.zip"
+
+      - name: Zip release package (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path release-pkg/* -DestinationPath "evomi-bridge-${{ github.ref_name }}-${{ matrix.zip }}.zip" -Force
+          Get-Item "evomi-bridge-${{ github.ref_name }}-${{ matrix.zip }}.zip" | Select-Object Name, Length
 
       - name: Upload zip to release
         env:
