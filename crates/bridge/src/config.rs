@@ -67,6 +67,10 @@ pub struct Config {
     pub lifetime: Option<u32>,
     /// Geo-target country codes (2-letter, uppercase). Empty = no targeting.
     pub countries: Vec<String>,
+    /// Fraud-score ceiling 0-100 (None = no enforcement). Checked via GetIPIntel.
+    pub fraud_limit: Option<u32>,
+    /// Contact email for the free GetIPIntel API (required for fraud checks).
+    pub fraud_contact: String,
 }
 
 impl Default for Config {
@@ -87,6 +91,8 @@ impl Default for Config {
             notify: true,
             session_type: SessionType::Session,
             lifetime: None,
+        fraud_limit: None,
+        fraud_contact: String::new(),
             countries: Vec::new(),
         }
     }
@@ -133,6 +139,11 @@ impl Config {
         if let Some(l) = self.lifetime {
             if l == 0 || l > 1440 {
                 return Err(err("lifetime must be 1-1440 minutes"));
+            }
+        }
+        if let Some(f) = self.fraud_limit {
+            if f > 100 {
+                return Err(err("fraud limit must be 0-100"));
             }
         }
         for c in &self.countries {
@@ -283,6 +294,8 @@ pub struct Explicit {
     pub session_type: Option<SessionType>,
     pub lifetime: Option<Option<u32>>,
     pub countries: Option<Vec<String>>,
+    pub fraud_limit: Option<Option<u32>>,
+    pub fraud_contact: Option<String>,
 }
 
 pub fn parse_countries(v: &str) -> Result<Vec<String>, String> {
@@ -351,6 +364,8 @@ pub fn resolve_config(env: &HashMap<String, String>, explicit: Explicit) -> Resu
         notify: explicit.notify.or(get("EVOMI_NOTIFY").and_then(|v| parse_bool_env(&v))).unwrap_or(true),
         session_type: explicit.session_type.or(get("EVOMI_SESSION_TYPE").and_then(|v| SessionType::from_key(&v.to_ascii_lowercase()))).unwrap_or(SessionType::Session),
         lifetime: explicit.lifetime.flatten().or(get("EVOMI_LIFETIME").and_then(|v| v.parse().ok())),
+        fraud_limit: explicit.fraud_limit.flatten().or(get("EVOMI_FRAUD_LIMIT").and_then(|v| v.parse().ok())),
+        fraud_contact: explicit.fraud_contact.or(get("EVOMI_FRAUD_CONTACT")).unwrap_or_default(),
         countries,
     };
     let _ = parse_u16;

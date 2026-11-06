@@ -96,6 +96,17 @@ function renderStatus(s) {
     if (cel) cel.remove();
   }
 
+  // Fraud score (0-100) with limit coloring.
+  const fel = $("fraud-line");
+  if (s.fraud_score != null) {
+    const over = s.fraud_limit != null && s.fraud_score > s.fraud_limit;
+    fel.textContent = `fraud ${s.fraud_score}` + (s.fraud_limit != null ? ` (limit ${s.fraud_limit})` : " (no limit)");
+    fel.style.color = over ? "var(--red)" : "var(--green-hi)";
+  } else {
+    fel.textContent = "fraud —" + (s.fraud_limit != null ? ` (limit ${s.fraud_limit}, no contact email?)` : "");
+    fel.style.color = "";
+  }
+
   const lifeMin = s.lifetime_min;
   const left = s.expires_in_s;
   const ring = $("ring-fg");
@@ -173,6 +184,8 @@ async function refreshSettings() {
   $("set-lifetime").value = s.lifetime ?? "";
   const c = s.countries;
   $("set-countries").value = Array.isArray(c) ? c.join(",") : (c || "");
+  $("set-fraud-limit").value = s.fraud_limit ?? "";
+  $("set-fraud-contact").value = s.fraud_contact || "";
   $("env-path").textContent = s.env_path ? `stored in ${s.env_path}` : "";
 }
 
@@ -240,6 +253,18 @@ function bindActions() {
     $("countries-input").value = "";
     setTimeout(pollStatus, 300);
   });
+  $("btn-fraud").addEventListener("click", async () => {
+    const raw = $("fraud-input").value.trim();
+    if (raw === "") {
+      await call("set_fraud_limit", { limit: null }, "Fraud limit").catch(() => {});
+    } else {
+      const v = parseInt(raw, 10);
+      if (Number.isNaN(v) || v < 0 || v > 100) return toast("fraud limit must be 0-100 (empty clears)");
+      await call("set_fraud_limit", { limit: v }, "Fraud limit").catch(() => {});
+    }
+    $("fraud-input").value = "";
+    setTimeout(pollStatus, 300);
+  });
   $("btn-pac").addEventListener("click", copyPac);
   document.querySelectorAll(".copyable").forEach((el) => {
     el.addEventListener("click", async () => {
@@ -270,6 +295,8 @@ function bindActions() {
       session_type: $("set-type").value,
       lifetime: lt,
       countries: $("set-countries").value,
+      fraud_limit: $("set-fraud-limit").value === "" ? null : parseInt($("set-fraud-limit").value, 10),
+      fraud_contact: $("set-fraud-contact").value,
       notify: $("set-notify").checked,
     };
     if (!payload.username) return toast("username is required");

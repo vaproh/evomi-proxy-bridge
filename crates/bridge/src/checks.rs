@@ -444,6 +444,47 @@ pub fn check_geo_blocking(
     }
 }
 
+/// Fraud-score lookup via GetIPIntel free API (no key, contact email required).
+/// Score is 0.0 (clean) to 1.0 (certain proxy). Best-effort: Err on any failure,
+/// including missing contact, rate limits (HTTP 429 surfaces as a refusal), or
+/// error statuses. Uses flags=b (fast ban-list + dynamic checks, <130ms).
+pub fn check_fraud_blocking(
+    username: &str,
+    password: &str,
+    upstream_host: &str,
+    upstream_port: u16,
+    upstream_tls: bool,
+    ip: &str,
+    contact: &str,
+    timeout: Duration,
+) -> Result<f32, CheckError> {
+    let contact = contact.trim();
+    if contact.is_empty() || ip.is_empty() {
+        return Err(CheckError::Net("fraud check needs an exit IP and contact email".into()));
+    }
+    let path = format!("/check.php?ip={ip}&contact={contact}&format=json&flags=b");
+    let body = get_via_upstream(
+        username, password, upstream_host, upstream_port, upstream_tls,
+        "check.getipintel.net", 80, &path, false, timeout, "",
+    )?;
+    parse_fraud_body(&body)
+}
+
+/// Parse a GetIPIntel JSON body into a 0.0-1.0 score.
+fn parse_fraud_body(body: &[u8]) -> Result<f32, CheckError> {
+    if json_field(body, "status") != "success" {
+        let msg = json_field(body, "message");
+        return Err(CheckError::Net(if msg.is_empty() { "fraud lookup failed".into() } else { msg }));
+    }
+    json_field(body, "result").parse::<f32>().map_err(|_| CheckError::Net("bad fraud score".into())).and_then(|s| {
+        if (0.0..=1.0).contains(&s) {
+            Ok(s)
+        } else {
+            Err(CheckError::Net("fraud score out of range".into()))
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,5 +496,13 @@ mod tests {
         assert_eq!(json_field(body, "city"), "Munich");
         assert_eq!(json_field(body, "missing"), "");
         assert_eq!(json_field(br#"{"status":"fail"}"#, "country"), "");
+    }
+
+    #[test]
+    fn fraud_body_parsing() {
+        let ok = br#"{"status":"success","result":"0.01","queryIP":"1.2.3.4","queryFlags":"b","queryFormat":"json","contact":"a@b.c"}"#;
+        assert!((parse_fraud_body(ok).unwrap() - 0.01).abs() < 1e-6);
+        assert!(parse_fraud_body(br#"{"status":"error","result":"-6","message":"contact invalid"}"#).is_err());
+        assert!(parse_fraud_body(b"not json").is_err());
     }
 }

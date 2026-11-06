@@ -63,6 +63,11 @@
               <input id="countries-input" type="text" placeholder="GB,US (empty clears)" autocomplete="off" />
               <button id="btn-countries" class="btn small">Set</button>
             </div>
+            <div class="row small-gap" style="margin-top:6px">
+              <input id="fraud-input" type="number" min="0" max="100" placeholder="fraud ≤" />
+              <button id="btn-fraud" class="btn small">Set</button>
+            </div>
+            <div id="fraud-line" class="mono fraud-line">fraud —</div>
           </div>
         </div>
       </div>
@@ -114,6 +119,10 @@
         </div>
         <div class="row2">
           <label>Countries (comma-separated, e.g. GB,US,DE)<input id="set-countries" type="text" placeholder="empty = any" autocomplete="off" /></label>
+        </div>
+        <div class="row2">
+          <label>Fraud limit 0-100 (empty = off)<input id="set-fraud-limit" type="number" min="0" max="100" placeholder="e.g. 30" /></label>
+          <label>Fraud contact email (GetIPIntel)<input id="set-fraud-contact" type="text" placeholder="you@example.com" autocomplete="off" /></label>
         </div>
         <button id="btn-save" class="btn primary wide">Save &amp; restart</button>
         <div id="env-path" class="env-path"></div>

@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use evomi_bridge_core::{
-    check_exit_ip_blocking, check_geo_blocking, env_password, load_dotenv, parse_countries,
-    resolve_config, Config, Explicit, LogBuffer, ProxyServer, SessionState, SessionType,
+    check_exit_ip_blocking, check_fraud_blocking, check_geo_blocking, env_password, load_dotenv,
+    parse_countries, resolve_config, Config, Explicit, LogBuffer, ProxyServer, SessionState,
+    SessionType,
 };
 use tauri::Manager;
 
@@ -24,6 +25,7 @@ struct Core {
     running: bool,
     last_ip: Option<String>,
     last_geo: String,
+    last_fraud: Option<f32>,
     last_check_note: String,
 }
 
@@ -60,6 +62,8 @@ impl Core {
             "countries": countries,
             "last_ip": self.last_ip,
             "last_geo": self.last_geo,
+            "fraud_score": self.last_fraud.map(|f| (f * 100.0).round() as u32),
+            "fraud_limit": self.config.fraud_limit,
             "last_check_note": self.last_check_note,
             "request_count": stats.as_ref().map(|s| s.request_count).unwrap_or(0),
             "connect_count": stats.as_ref().map(|s| s.connect_count).unwrap_or(0),
@@ -88,6 +92,7 @@ impl AppState {
                 running: false,
                 last_ip: None,
                 last_geo: String::new(),
+                last_fraud: None,
                 last_check_note: String::new(),
             }),
             logs,
@@ -244,80 +249,143 @@ async fn stop_bridge(state: tauri::State<'_, AppState>) -> Result<serde_json::Va
     Ok(state.core.lock().unwrap().status_snapshot())
 }
 
+/// Max extra rotations when hunting for an exit IP under the fraud limit.
+const MAX_FRAUD_ROTATES: u8 = 5;
+
 fn spawn_verify(app: tauri::AppHandle, old_ip: Option<String>) {
     tauri::async_runtime::spawn(async move {
         let state: tauri::State<AppState> = app.state();
-        let (username, password, host, port, tls, cafile) = {
-            let core = state.core.lock().unwrap();
-            // Live session password (with current session id), NOT the template:
-            // the template keeps the original id and would pin checks to the old exit IP.
-            let password = match core.session.as_ref() {
-                Some(s) => s.current_password(),
-                None => core.password.clone(),
+        // Each attempt snapshots the LIVE session password (rotation changes it).
+        let mut attempt: u8 = 0;
+        let mut outcome: Option<(String, String, Option<f32>)> = None;
+        loop {
+            let (username, password, host, port, tls, cafile, fraud_limit, fraud_contact) = {
+                let core = state.core.lock().unwrap();
+                let password = match core.session.as_ref() {
+                    Some(s) => s.current_password(),
+                    None => core.password.clone(),
+                };
+                (
+                    core.config.username.clone(),
+                    password,
+                    core.config.upstream_host.clone(),
+                    core.config.upstream_port,
+                    core.config.upstream_tls,
+                    core.config.upstream_cafile.clone(),
+                    core.config.fraud_limit,
+                    core.config.fraud_contact.clone(),
+                )
             };
-            (
-                core.config.username.clone(),
-                password,
-                core.config.upstream_host.clone(),
-                core.config.upstream_port,
-                core.config.upstream_tls,
-                core.config.upstream_cafile.clone(),
-            )
-        };
-        let cafile = if cafile.is_empty() { None } else { Some(cafile) };
-        let geo_args = (username.clone(), password.clone(), host.clone(), port, tls);
-        let res = tokio::task::spawn_blocking(move || {
-            check_exit_ip_blocking(&username, &password, &host, port, tls, Duration::from_secs(CHECK_TIMEOUT_S), cafile.as_deref().unwrap_or(""))
-        })
-        .await;
-        let (ip, geo_text) = match res {
-            Ok(Ok(ip)) => {
-                let (u, p, h, pt, t) = geo_args;
-                let ip_for_geo = ip.clone();
-                let geo = tokio::task::spawn_blocking(move || {
-                    check_geo_blocking(&u, &p, &h, pt, t, &ip_for_geo, Duration::from_secs(CHECK_TIMEOUT_S))
+            let cafile = if cafile.is_empty() { None } else { Some(cafile) };
+            let cafile_s = cafile.as_deref().unwrap_or("");
+            let res = {
+                let (u, p, h, c) = (username.clone(), password.clone(), host.clone(), cafile_s.to_string());
+                tokio::task::spawn_blocking(move || {
+                    check_exit_ip_blocking(&u, &p, &h, port, tls, Duration::from_secs(CHECK_TIMEOUT_S), &c)
                 })
                 .await
-                .unwrap_or_default();
-                let g = if geo.country.is_empty() {
-                    String::new()
-                } else {
-                    format!("{}, {}", geo.city, geo.country)
+            };
+            let ip = match res {
+                Ok(Ok(ip)) => ip,
+                Ok(Err(e)) => {
+                    let msg = format!("check failed: {e}");
+                    log::warn!("IP {msg}");
+                    state.core.lock().unwrap().last_check_note = msg;
+                    break;
+                }
+                Err(e) => {
+                    let msg = format!("check task failed: {e}");
+                    log::warn!("IP {msg}");
+                    state.core.lock().unwrap().last_check_note = msg;
+                    break;
+                }
+            };
+            // Geo + fraud run concurrently (both need only the exit IP).
+            let (u, p, h) = (username.clone(), password.clone(), host.clone());
+            let ip_g = ip.clone();
+            let geo_h = tokio::task::spawn_blocking(move || {
+                check_geo_blocking(&u, &p, &h, port, tls, &ip_g, Duration::from_secs(CHECK_TIMEOUT_S))
+            });
+            let fraud_h = if fraud_limit.is_some() && !fraud_contact.trim().is_empty() {
+                let (u, p, h, fc) = (username.clone(), password.clone(), host.clone(), fraud_contact.clone());
+                let ip_f = ip.clone();
+                Some(tokio::task::spawn_blocking(move || {
+                    check_fraud_blocking(&u, &p, &h, port, tls, &ip_f, &fc, Duration::from_secs(CHECK_TIMEOUT_S))
+                }))
+            } else {
+                None
+            };
+            let geo = geo_h.await.unwrap_or_default();
+            let geo_text = if geo.country.is_empty() {
+                String::new()
+            } else {
+                format!("{}, {}", geo.city, geo.country)
+            };
+            let fraud: Option<f32> = match fraud_h {
+                Some(h) => h.await.ok().and_then(|r| r.ok()),
+                None => None,
+            };
+            // Over the fraud limit? Rotate and try a fresh session (bounded).
+            let over = match (fraud_limit, fraud) {
+                (Some(lim), Some(score)) => score * 100.0 > lim as f32,
+                _ => false,
+            };
+            if over && attempt < MAX_FRAUD_ROTATES {
+                attempt += 1;
+                let label = {
+                    let core = state.core.lock().unwrap();
+                    match core.session.as_ref() {
+                        Some(s) => {
+                            let label = s.rotate();
+                            let retired = core.server.as_ref().map(|sv| sv.retire_idle_upstreams()).unwrap_or(0);
+                            Some((label, retired))
+                        }
+                        None => None,
+                    }
                 };
-                (Some(ip), g)
+                if let Some((label, retired)) = label {
+                    log::info!("fraud {score:.0} over limit — rotated to {label} (attempt {attempt}/{MAX_FRAUD_ROTATES}, retired {retired})", score = fraud.unwrap_or(0.0) * 100.0);
+                    continue;
+                }
             }
-            Ok(Err(e)) => {
-                let msg = format!("check failed: {e}");
-                log::warn!("IP {msg}");
-                state.core.lock().unwrap().last_check_note = msg;
-                (None, String::new())
+            if over {
+                log::warn!("fraud still over limit after {attempt} rotations; keeping best effort");
             }
-            Err(e) => {
-                let msg = format!("check task failed: {e}");
-                log::warn!("IP {msg}");
-                state.core.lock().unwrap().last_check_note = msg;
-                (None, String::new())
-            }
+            outcome = Some((ip, geo_text, fraud));
+            break;
+        }
+        let (Some((ip, geo_text, fraud))) = outcome else {
+            update_tray_tooltip(&app);
+            return;
         };
         let notify_enabled;
         let detail;
+        let fraud_text = fraud.map(|f| {
+            let v = (f * 1000.0).round() / 10.0;
+            if v == v.trunc() {
+                format!("fraud {}", v as u32)
+            } else {
+                format!("fraud {v:.1}")
+            }
+        }).unwrap_or_default();
         {
             let mut core = state.core.lock().unwrap();
             notify_enabled = core.config.notify;
-            if let Some(ip) = ip.clone() {
-                core.last_ip = Some(ip.clone());
-                core.last_geo = geo_text.clone();
-                core.last_check_note = "verified just now".to_string();
-            }
-            let changed = match (&old_ip, &ip) {
-                (Some(o), Some(n)) => o != n,
+            core.last_ip = Some(ip.clone());
+            core.last_geo = geo_text.clone();
+            core.last_fraud = fraud;
+            core.last_check_note = "verified just now".to_string();
+            let changed = match &old_ip {
+                Some(o) => o != &ip,
                 _ => false,
             };
-            detail = match (&old_ip, &ip) {
-                (_, Some(n)) if changed => format!("{o} -> {n} ({geo_text})", o = old_ip.as_deref().unwrap_or(""), n = n, geo_text = geo_text.trim_matches(|c| c == ' ' || c == ',').trim_end_matches(',').trim()),
-                (_, Some(n)) if old_ip.is_none() => format!("{n} ({geo_text})"),
-                (_, Some(n)) => format!("{n} (unchanged)"),
-                _ => "check failed".to_string(),
+            let loc = geo_text.trim_matches(|c| c == ' ' || c == ',').trim_end_matches(',').trim();
+            let extra = [loc, fraud_text.as_str()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
+            let suffix = if extra.is_empty() { String::new() } else { format!(" ({extra})") };
+            detail = match (&old_ip, changed) {
+                (Some(o), true) => format!("{o} -> {ip}{suffix}"),
+                (None, _) => format!("{ip}{suffix}"),
+                _ => format!("{ip} (unchanged){suffix}"),
             };
             if old_ip.is_some() {
                 log::info!("verify: {detail}");
@@ -442,6 +510,30 @@ async fn set_countries(
 }
 
 #[tauri::command]
+async fn set_fraud_limit(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    if let Some(l) = limit {
+        if l > 100 {
+            return Err("fraud limit must be 0-100".into());
+        }
+    }
+    let old_ip = {
+        let mut core = state.core.lock().unwrap();
+        core.config.fraud_limit = limit;
+        match limit {
+            Some(l) => log::info!("fraud limit -> {l}"),
+            None => log::info!("fraud limit cleared"),
+        }
+        core.last_ip.clone()
+    };
+    spawn_verify(app, old_ip);
+    Ok(state.core.lock().unwrap().status_snapshot())
+}
+
+#[tauri::command]
 async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     let core = state.core.lock().unwrap();
     Ok(serde_json::json!({
@@ -455,6 +547,8 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_json::V
         "session_type": core.config.session_type.to_string(),
         "lifetime": core.config.lifetime,
         "countries": core.config.countries.join(","),
+        "fraud_limit": core.config.fraud_limit,
+        "fraud_contact": core.config.fraud_contact,
         "notify": core.config.notify,
         "env_path": core.env_path,
     }))
@@ -476,6 +570,8 @@ async fn save_settings(
     session_type: String,
     lifetime: Option<u32>,
     countries: String,
+    fraud_limit: Option<u32>,
+    fraud_contact: String,
     notify: bool,
 ) -> Result<serde_json::Value, String> {
     let key = SessionType::from_key(&session_type.to_ascii_lowercase())
@@ -490,6 +586,11 @@ async fn save_settings(
     } else {
         parse_countries(&countries).map_err(|e: String| e)?
     };
+    if let Some(f) = fraud_limit {
+        if f > 100 {
+            return Err("fraud limit must be 0-100".into());
+        }
+    }
     {
         let old_server = state.core.lock().unwrap().server.take();
         if let Some(server) = old_server {
@@ -509,6 +610,8 @@ async fn save_settings(
         core.config.session_type = key;
         core.config.lifetime = lifetime;
         core.config.countries = parsed_countries;
+        core.config.fraud_limit = fraud_limit;
+        core.config.fraud_contact = fraud_contact.trim().to_string();
         core.config.notify = notify;
         core.config.validate().map_err(|e| e.0)?;
         if !password.is_empty() {
@@ -532,6 +635,12 @@ async fn save_settings(
         }
         if !core.config.countries.is_empty() {
             updates.insert("EVOMI_COUNTRIES".into(), core.config.countries.join(","));
+        }
+        if let Some(f) = fraud_limit {
+            updates.insert("EVOMI_FRAUD_LIMIT".into(), f.to_string());
+        }
+        if !core.config.fraud_contact.is_empty() {
+            updates.insert("EVOMI_FRAUD_CONTACT".into(), core.config.fraud_contact.clone());
         }
         if !core.config.local_pass.is_empty() {
             updates.insert("EVOMI_LOCAL_PASS".into(), core.config.local_pass.clone());
@@ -714,6 +823,7 @@ pub fn run() {
             check_ip,
             set_session_type,
             set_lifetime,
+            set_fraud_limit,
             set_countries,
             get_settings,
             save_settings,
