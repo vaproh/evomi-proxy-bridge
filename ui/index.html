@@ -59,6 +59,10 @@
               <input id="lifetime-input" type="number" min="0" max="1440" placeholder="min" />
               <button id="btn-lifetime" class="btn small">Set</button>
             </div>
+            <div class="row small-gap" style="margin-top:6px">
+              <input id="countries-input" type="text" placeholder="GB,US (empty clears)" autocomplete="off" />
+              <button id="btn-countries" class="btn small">Set</button>
+            </div>
           </div>
         </div>
       </div>
@@ -107,6 +111,9 @@
             </select>
           </label>
           <label>Lifetime (min)<input id="set-lifetime" type="number" min="0" max="1440" /></label>
+        </div>
+        <div class="row2">
+          <label>Countries (comma-separated, e.g. GB,US,DE)<input id="set-countries" type="text" placeholder="empty = any" autocomplete="off" /></label>
         </div>
         <button id="btn-save" class="btn primary wide">Save &amp; restart</button>
         <div id="env-path" class="env-path"></div>

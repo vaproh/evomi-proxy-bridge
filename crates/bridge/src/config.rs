@@ -65,6 +65,8 @@ pub struct Config {
     pub session_type: SessionType,
     /// Sticky lifetime minutes (None = default/unset). Only used with `session`.
     pub lifetime: Option<u32>,
+    /// Geo-target country codes (2-letter, uppercase). Empty = no targeting.
+    pub countries: Vec<String>,
 }
 
 impl Default for Config {
@@ -85,6 +87,7 @@ impl Default for Config {
             notify: true,
             session_type: SessionType::Session,
             lifetime: None,
+            countries: Vec::new(),
         }
     }
 }
@@ -130,6 +133,11 @@ impl Config {
         if let Some(l) = self.lifetime {
             if l == 0 || l > 1440 {
                 return Err(err("lifetime must be 1-1440 minutes"));
+            }
+        }
+        for c in &self.countries {
+            if c.len() != 2 || !c.bytes().all(|b| b.is_ascii_alphabetic()) {
+                return Err(err(&format!("invalid country code: {c:?} (expected 2 letters)")));
             }
         }
         Ok(())
@@ -274,6 +282,24 @@ pub struct Explicit {
     pub notify: Option<bool>,
     pub session_type: Option<SessionType>,
     pub lifetime: Option<Option<u32>>,
+    pub countries: Option<Vec<String>>,
+}
+
+pub fn parse_countries(v: &str) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for part in v.split(',') {
+        let c = part.trim().to_ascii_uppercase();
+        if c.is_empty() {
+            continue;
+        }
+        if c.len() != 2 || !c.bytes().all(|b| b.is_ascii_alphabetic()) {
+            return Err(format!("invalid country code: {part:?} (expected 2 letters)"));
+        }
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    Ok(out)
 }
 
 fn parse_bool_env(v: &str) -> Option<bool> {
@@ -302,6 +328,13 @@ pub fn resolve_config(env: &HashMap<String, String>, explicit: Explicit) -> Resu
     }
     let get = |k: &str| env.get(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let parse_u16 = |k: &str, v: &str| v.parse::<u16>().map_err(|_| err(format!("invalid {k}: {v:?}")));
+    let countries = match explicit.countries.clone() {
+        Some(c) => c,
+        None => match get("EVOMI_COUNTRIES") {
+            Some(v) => parse_countries(&v).map_err(err)?,
+            None => Vec::new(),
+        },
+    };
     let cfg = Config {
         local_host: DEFAULT_LOCAL_HOST.to_string(),
         local_port: explicit.local_port.or(get("EVOMI_LOCAL_PORT").map(|v| v.parse().unwrap_or(DEFAULT_LOCAL_PORT))).unwrap_or(DEFAULT_LOCAL_PORT),
@@ -318,6 +351,7 @@ pub fn resolve_config(env: &HashMap<String, String>, explicit: Explicit) -> Resu
         notify: explicit.notify.or(get("EVOMI_NOTIFY").and_then(|v| parse_bool_env(&v))).unwrap_or(true),
         session_type: explicit.session_type.or(get("EVOMI_SESSION_TYPE").and_then(|v| SessionType::from_key(&v.to_ascii_lowercase()))).unwrap_or(SessionType::Session),
         lifetime: explicit.lifetime.flatten().or(get("EVOMI_LIFETIME").and_then(|v| v.parse().ok())),
+        countries,
     };
     let _ = parse_u16;
     cfg.validate()?;
@@ -378,5 +412,16 @@ mod tests {
         c.local_host = "0.0.0.0".into();
         c.username = "u".into();
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn env_countries_parsed_and_validated() {
+        let mut env = HashMap::new();
+        env.insert("EVOMI_USERNAME".into(), "u".into());
+        env.insert("EVOMI_COUNTRIES".into(), "gb, us,DE".into());
+        let cfg = resolve_config(&env, Explicit::default()).unwrap();
+        assert_eq!(cfg.countries, vec!["GB".to_string(), "US".to_string(), "DE".to_string()]);
+        env.insert("EVOMI_COUNTRIES".into(), "GB,USA".into());
+        assert!(resolve_config(&env, Explicit::default()).is_err());
     }
 }

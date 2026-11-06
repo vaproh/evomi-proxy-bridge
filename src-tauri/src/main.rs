@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use evomi_bridge_core::{
-    check_exit_ip_blocking, check_geo_blocking, env_password, load_dotenv, resolve_config,
-    Config, Explicit, LogBuffer, ProxyServer, SessionState, SessionType,
+    check_exit_ip_blocking, check_geo_blocking, env_password, load_dotenv, parse_countries,
+    resolve_config, Config, Explicit, LogBuffer, ProxyServer, SessionState, SessionType,
 };
 use tauri::Manager;
 
@@ -29,15 +29,16 @@ struct Core {
 
 impl Core {
     fn status_snapshot(&self) -> serde_json::Value {
-        let (session_label, session_type, flags, lifetime_min, expires_in) = match &self.session {
+        let (session_label, session_type, flags, lifetime_min, expires_in, countries) = match &self.session {
             Some(s) => (
                 s.label(),
                 s.session_type().to_string(),
                 s.flags().join(" | "),
                 s.lifetime_minutes().map(|m| m as u64),
                 s.expires_in_s(),
+                s.countries().join(","),
             ),
-            None => ("-".into(), "-".into(), String::new(), None, None),
+            None => ("-".into(), "-".into(), String::new(), None, None, String::new()),
         };
         let stats = self.server.as_ref().map(|s| s.stats());
         serde_json::json!({
@@ -56,6 +57,7 @@ impl Core {
             "flags": flags,
             "lifetime_min": lifetime_min,
             "expires_in_s": expires_in,
+            "countries": countries,
             "last_ip": self.last_ip,
             "last_geo": self.last_geo,
             "last_check_note": self.last_check_note,
@@ -173,7 +175,10 @@ fn initial_session(config: &Config, password: &str) -> Option<Arc<SessionState>>
     if let Some(l) = config.lifetime {
         let _ = session.set_lifetime(Some(l));
     }
-    // Otherwise any lifetime flag already present in the pasted template stays.
+    if !config.countries.is_empty() {
+        let _ = session.set_countries(Some(config.countries.clone()));
+    }
+    // Otherwise any lifetime/country flags already present in the pasted template stay.
     Some(session)
 }
 
@@ -408,6 +413,35 @@ async fn set_lifetime(
 }
 
 #[tauri::command]
+async fn set_countries(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    countries: String,
+) -> Result<serde_json::Value, String> {
+    let parsed = if countries.trim().is_empty() {
+        Vec::new()
+    } else {
+        parse_countries(&countries).map_err(|e| e.to_string())?
+    };
+    let old_ip = {
+        let mut core = state.core.lock().unwrap();
+        let session = core.session.clone().ok_or("No session (set credentials first).")?;
+        if parsed.is_empty() {
+            session.set_countries(None).map_err(|e| e)?;
+            core.config.countries.clear();
+            log::info!("countries cleared");
+        } else {
+            session.set_countries(Some(parsed.clone())).map_err(|e| e)?;
+            core.config.countries = parsed;
+            log::info!("countries -> {}", core.config.countries.join(","));
+        }
+        core.last_ip.clone()
+    };
+    spawn_verify(app, old_ip);
+    Ok(state.core.lock().unwrap().status_snapshot())
+}
+
+#[tauri::command]
 async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_json::Value, String> {
     let core = state.core.lock().unwrap();
     Ok(serde_json::json!({
@@ -420,6 +454,7 @@ async fn get_settings(state: tauri::State<'_, AppState>) -> Result<serde_json::V
         "local_user": core.config.local_user,
         "session_type": core.config.session_type.to_string(),
         "lifetime": core.config.lifetime,
+        "countries": core.config.countries.join(","),
         "notify": core.config.notify,
         "env_path": core.env_path,
     }))
@@ -440,6 +475,7 @@ async fn save_settings(
     local_pass: String,
     session_type: String,
     lifetime: Option<u32>,
+    countries: String,
     notify: bool,
 ) -> Result<serde_json::Value, String> {
     let key = SessionType::from_key(&session_type.to_ascii_lowercase())
@@ -449,6 +485,11 @@ async fn save_settings(
             return Err("lifetime must be 1-1440".into());
         }
     }
+    let parsed_countries = if countries.trim().is_empty() {
+        Vec::new()
+    } else {
+        parse_countries(&countries).map_err(|e: String| e)?
+    };
     {
         let old_server = state.core.lock().unwrap().server.take();
         if let Some(server) = old_server {
@@ -467,6 +508,7 @@ async fn save_settings(
         core.config.local_pass = local_pass;
         core.config.session_type = key;
         core.config.lifetime = lifetime;
+        core.config.countries = parsed_countries;
         core.config.notify = notify;
         core.config.validate().map_err(|e| e.0)?;
         if !password.is_empty() {
@@ -487,6 +529,9 @@ async fn save_settings(
         updates.insert("EVOMI_SESSION_TYPE".into(), key.to_string());
         if let Some(l) = lifetime {
             updates.insert("EVOMI_LIFETIME".into(), l.to_string());
+        }
+        if !core.config.countries.is_empty() {
+            updates.insert("EVOMI_COUNTRIES".into(), core.config.countries.join(","));
         }
         if !core.config.local_pass.is_empty() {
             updates.insert("EVOMI_LOCAL_PASS".into(), core.config.local_pass.clone());
@@ -669,6 +714,7 @@ pub fn run() {
             check_ip,
             set_session_type,
             set_lifetime,
+            set_countries,
             get_settings,
             save_settings,
             quit_app,

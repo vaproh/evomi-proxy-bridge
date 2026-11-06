@@ -144,6 +144,44 @@ impl SessionState {
         }
     }
 
+    /// Set geo-target countries (2-letter codes) or clear with None/empty.
+    /// Stored as a `country-GB,US,...` flag; survives rotation like lifetime.
+    pub fn set_countries(&self, countries: Option<Vec<String>>) -> Result<(), String> {
+        let list: Vec<String> = countries
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| c.trim().to_ascii_uppercase())
+            .filter(|c| !c.is_empty())
+            .collect();
+        for c in &list {
+            if c.len() != 2 || !c.bytes().all(|b| b.is_ascii_alphabetic()) {
+                return Err(format!("bad country code: {c} (expected 2 letters, e.g. GB)"));
+            }
+        }
+        let mut i = self.inner.lock().unwrap();
+        i.head = strip_country_flag(&i.head);
+        i.tail = strip_country_flag(&i.tail);
+        if !list.is_empty() {
+            i.tail.push_str(&format!("_country-{}", list.join(",")));
+        }
+        i.rotated_at = now_s();
+        Ok(())
+    }
+
+    /// Currently targeted country codes from the `country-` flag, if any.
+    pub fn countries(&self) -> Vec<String> {
+        for flag in self.flags() {
+            if let Some(v) = flag.strip_prefix("country-") {
+                return v
+                    .split(',')
+                    .map(|c| c.trim().to_ascii_uppercase())
+                    .filter(|c| !c.is_empty())
+                    .collect();
+            }
+        }
+        Vec::new()
+    }
+
     /// Set sticky lifetime (1-1440) or clear with None. Only kept for `session`.
     pub fn set_lifetime(&self, minutes: Option<u32>) -> Result<(), String> {
         if let Some(m) = minutes {
@@ -200,8 +238,16 @@ fn is_session_segment(probe_with_underscore: &str) -> bool {
 }
 
 fn strip_lifetime_flag(s: &str) -> String {
+    strip_prefix_flag(s, "lifetime-")
+}
+
+fn strip_country_flag(s: &str) -> String {
+    strip_prefix_flag(s, "country-")
+}
+
+fn strip_prefix_flag(s: &str, prefix: &str) -> String {
     let mut parts: Vec<&str> = s.split('_').collect();
-    parts.retain(|p| !p.starts_with("lifetime-"));
+    parts.retain(|p| !p.starts_with(prefix));
     let mut out = parts.join("_");
     if s.starts_with('_') && !out.starts_with('_') {
         out.insert(0, '_');
@@ -250,6 +296,24 @@ mod tests {
         let pw = s.current_password();
         assert!(!pw.contains("lifetime"));
         assert!(pw.contains("_hardsession-"));
+    }
+
+    #[test]
+    fn set_countries_roundtrip() {
+        let s = SessionState::new("BASE_session-Ab12Cd34").unwrap();
+        assert!(s.countries().is_empty());
+        s.set_countries(Some(vec!["gb".into(), " US ".into()])).unwrap();
+        assert_eq!(s.countries(), vec!["GB".to_string(), "US".to_string()]);
+        let pw = s.current_password();
+        assert!(pw.contains("_country-GB,US"));
+        assert_eq!(pw.matches("_session-").count(), 1);
+        s.rotate();
+        assert!(s.current_password().contains("_country-GB,US"));
+        s.set_countries(None).unwrap();
+        assert!(s.countries().is_empty());
+        assert!(!s.current_password().contains("country-"));
+        assert!(s.set_countries(Some(vec!["USA".into()])).is_err());
+        assert!(s.set_countries(Some(vec!["1A".into()])).is_err());
     }
 
     #[test]

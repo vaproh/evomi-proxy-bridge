@@ -80,6 +80,21 @@ function renderStatus(s) {
     c.classList.toggle("active", label === s.session_type);
   });
   $("flags").textContent = s.flags || "—";
+  const co = s.countries;
+  const coText = Array.isArray(co) ? co.join(", ") : (co || "");
+  if (coText) {
+    let cel = $("countries-line");
+    if (!cel) {
+      cel = document.createElement("div");
+      cel.id = "countries-line";
+      cel.className = "countries-line mono";
+      $("flags").after(cel);
+    }
+    cel.textContent = "countries: " + coText;
+  } else {
+    const cel = $("countries-line");
+    if (cel) cel.remove();
+  }
 
   const lifeMin = s.lifetime_min;
   const left = s.expires_in_s;
@@ -156,6 +171,8 @@ async function refreshSettings() {
   const st = (s.session_type || "session").replace("hard", "hard").replace("lockedsession", "locked").replace("hardsession", "hard");
   $("set-type").value = st === "session" ? "session" : st;
   $("set-lifetime").value = s.lifetime ?? "";
+  const c = s.countries;
+  $("set-countries").value = Array.isArray(c) ? c.join(",") : (c || "");
   $("env-path").textContent = s.env_path ? `stored in ${s.env_path}` : "";
 }
 
@@ -218,6 +235,11 @@ function bindActions() {
     $("lifetime-input").value = "";
     setTimeout(pollStatus, 300);
   });
+  $("btn-countries").addEventListener("click", async () => {
+    await call("set_countries", { countries: $("countries-input").value }, "Countries").catch(() => {});
+    $("countries-input").value = "";
+    setTimeout(pollStatus, 300);
+  });
   $("btn-pac").addEventListener("click", copyPac);
   document.querySelectorAll(".copyable").forEach((el) => {
     el.addEventListener("click", async () => {
@@ -247,6 +269,7 @@ function bindActions() {
       local_pass: $("set-local-pass").value,
       session_type: $("set-type").value,
       lifetime: lt,
+      countries: $("set-countries").value,
       notify: $("set-notify").checked,
     };
     if (!payload.username) return toast("username is required");

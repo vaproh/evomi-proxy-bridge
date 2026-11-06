@@ -14,6 +14,6 @@ pub mod session;
 pub use logging::{LogBuffer, LogEntry};
 
 pub use checks::{check_exit_ip_blocking, check_exit_ip_blocking_via, check_geo_blocking, GeoInfo};
-pub use config::{env_password, load_dotenv, parse_proxy_url, resolve_config, Config, Explicit, SessionType};
+pub use config::{env_password, load_dotenv, parse_countries, parse_proxy_url, resolve_config, Config, Explicit, SessionType};
 pub use proxy::{ProxyServer, ServerStats};
 pub use session::SessionState;
